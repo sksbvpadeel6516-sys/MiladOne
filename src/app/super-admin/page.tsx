@@ -193,7 +193,9 @@ export default function SuperAdminPage() {
             <main className="main-content" style={{ marginLeft: 0 }}>
                 <header className="main-header">
                     <div className="flex items-c gap-3">
-                        <div className="sidebar-logo-icon">⚡</div>
+                        <div className="sidebar-logo-icon" style={{ background: 'white', padding: 4 }}>
+                            <img src="/logo/logo.png" alt="MiladOne Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                        </div>
                         <div>
                             <h3 style={{ fontSize: '1rem', fontWeight: 800 }}>Super Admin</h3>
                             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{userEmail}</p>

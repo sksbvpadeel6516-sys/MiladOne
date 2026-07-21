@@ -2,10 +2,10 @@ export default function Footer() {
     return (
         <footer className="app-footer">
             <p className="app-footer-text">
-                Created by{' '}
-                <span className="app-footer-brand">Rikash</span>
+                Developed by{' '}
+                <span className="app-footer-brand">MeridianTech</span>
                 {' '}·{' '}
-                <span>Easy-Score</span>
+                <span>MiladOne</span>
                 {' '}·{' '}
                 <span>© {new Date().getFullYear()}</span>
             </p>

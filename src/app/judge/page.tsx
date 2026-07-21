@@ -26,6 +26,19 @@ const itemV = {
     show: { opacity: 1, y: 0, transition: { duration: 0.3, ease: [0.22, 1, 0.36, 1] as const } },
 };
 
+const getCodeName = (num: number, type: 'number' | 'letter' = 'number') => {
+    if (type === 'letter') {
+        let temp = num - 1;
+        let letter = '';
+        while (temp >= 0) {
+            letter = String.fromCharCode((temp % 26) + 65) + letter;
+            temp = Math.floor(temp / 26) - 1;
+        }
+        return letter;
+    }
+    return String(num);
+};
+
 export default function JudgePage() {
     const router = useRouter();
     const [authReady, setAuthReady] = useState(false);
@@ -133,6 +146,12 @@ export default function JudgePage() {
             }, (payload) => {
                 setEvents((prev) => [payload.new as Event, ...prev.filter((e) => e.id !== (payload.new as Event).id)]);
             })
+            .on('postgres_changes', {
+                event: 'UPDATE', schema: 'public', table: 'rooms',
+                filter: `id=eq.${joinedRoom.id}`,
+            }, (payload) => {
+                setJoinedRoom(payload.new as Room);
+            })
             .subscribe();
         return () => { supabase.removeChannel(ch); };
     }, [joinedRoom]);
@@ -181,6 +200,22 @@ export default function JudgePage() {
             showToast(err instanceof Error ? err.message : 'Failed to join.', 'error');
         } finally {
             setJoining(false);
+        }
+    };
+
+    const updateRoomCodeType = async (type: 'number' | 'letter') => {
+        if (!joinedRoom) return;
+        try {
+            const { error } = await supabase
+                .from('rooms')
+                .update({ code_type: type })
+                .eq('id', joinedRoom.id);
+            if (error) throw error;
+            setJoinedRoom(prev => prev ? { ...prev, code_type: type } : null);
+            showToast(`Room code style changed to ${type === 'letter' ? 'Letters' : 'Numbers'}.`, 'success');
+        } catch (err) {
+            console.error(err);
+            showToast('Failed to update code style.', 'error');
         }
     };
 
@@ -236,9 +271,11 @@ export default function JudgePage() {
         const nums = Array.from({ length: scoringEvent.participant_count }, (_, i) => i + 1);
         for (const num of nums) {
             const v = scores[num];
-            if (!v && v !== '0') { showToast(`Fill in score for Participant ${num}.`, 'error'); return; }
+            const labelStyle = joinedRoom.code_type === 'letter' ? 'Letter' : 'Number';
+            const name = getCodeName(num, joinedRoom.code_type);
+            if (!v && v !== '0') { showToast(`Fill in score for Code ${labelStyle} ${name}.`, 'error'); return; }
             const n = Number(v);
-            if (isNaN(n) || n < 0 || n > 100) { showToast(`Participant ${num}: score must be 0–100.`, 'error'); return; }
+            if (isNaN(n) || n < 0 || n > 100) { showToast(`Code ${labelStyle} ${name}: score must be 0–100.`, 'error'); return; }
         }
         setSubmitting(true);
         try {
@@ -317,14 +354,16 @@ export default function JudgePage() {
             <header className="judge-header">
                 <div className="flex items-c gap-3">
                     <div style={{
-                        width: 32, height: 32, background: 'var(--grad-primary)',
+                        width: 32, height: 32, background: 'white', border: '1px solid var(--border)',
                         borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        color: 'white', fontSize: 15, fontWeight: 800, flexShrink: 0,
-                        boxShadow: 'var(--shadow-pri)',
-                    }}>⚡</div>
+                        flexShrink: 0, padding: 4,
+                        boxShadow: 'var(--shadow-xs)',
+                    }}>
+                        <img src="/logo/logo.png" alt="MiladOne Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                    </div>
                     <div>
                         <span style={{ fontWeight: 800, fontSize: '0.95rem' }}>
-                            Easy<span style={{ color: 'var(--primary)' }}>Score</span>
+                            Milad<span style={{ color: 'var(--primary)' }}>One</span>
                         </span>
                         {joinedRoom && (
                             <span className="text-xs col-muted" style={{ marginLeft: 8 }}>
@@ -449,6 +488,52 @@ export default function JudgePage() {
                                 </motion.button>
                             </div>
 
+                            {/* Code Style Selector */}
+                            <div className="card" style={{ marginBottom: 20, border: '1px solid var(--border)', background: '#F8FAFC' }}>
+                                <div className="card-body" style={{ padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+                                    <div>
+                                        <h4 style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Room Participant Code Style</h4>
+                                        <p className="text-xs col-muted" style={{ margin: 0 }}>Select if participants are identified by Numbers (1, 2...) or Letters (A, B...)</p>
+                                    </div>
+                                    <div className="flex gap-2" style={{ background: '#F1F5F9', padding: 4, borderRadius: 8 }}>
+                                        <button
+                                            type="button"
+                                            className="btn btn-sm"
+                                            style={{
+                                                padding: '6px 12px',
+                                                fontSize: '0.8rem',
+                                                borderRadius: 6,
+                                                fontWeight: 600,
+                                                background: joinedRoom.code_type === 'number' ? '#FFFFFF' : 'transparent',
+                                                color: joinedRoom.code_type === 'number' ? 'var(--primary)' : 'var(--text-secondary)',
+                                                boxShadow: joinedRoom.code_type === 'number' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                                                border: 'none',
+                                            }}
+                                            onClick={() => updateRoomCodeType('number')}
+                                        >
+                                            Numbers (1, 2, 3...)
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn btn-sm"
+                                            style={{
+                                                padding: '6px 12px',
+                                                fontSize: '0.8rem',
+                                                borderRadius: 6,
+                                                fontWeight: 600,
+                                                background: joinedRoom.code_type === 'letter' ? '#FFFFFF' : 'transparent',
+                                                color: joinedRoom.code_type === 'letter' ? 'var(--primary)' : 'var(--text-secondary)',
+                                                boxShadow: joinedRoom.code_type === 'letter' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                                                border: 'none',
+                                            }}
+                                            onClick={() => updateRoomCodeType('letter')}
+                                        >
+                                            Letters (A, B, C...)
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
                             {loadingEvents ? (
                                 <div style={{ display: 'flex', justifyContent: 'center', padding: '48px 0' }}>
                                     <div className="spinner" />
@@ -508,7 +593,7 @@ export default function JudgePage() {
                     {/* ── CREATE EVENT ── */}
                     {step === 'create-event' && (
                         <motion.div key="create-event" variants={pageVariants} initial="initial" animate="in" exit="out">
-                            <div style={{ maxWidth: 520, margin: '0 auto' }}>
+                            <div style={{ maxWidth: 680, margin: '0 auto' }}>
                                 <div className="flex items-c gap-3" style={{ marginBottom: 20 }}>
                                     <motion.button className="btn btn-secondary btn-sm" onClick={() => setStep('events')}
                                         whileTap={{ scale: 0.96 }}>← Back</motion.button>
@@ -580,10 +665,10 @@ export default function JudgePage() {
                                                     ))}
                                                 </select>
                                                 <p className="text-xs col-muted mt-1">
-                                                    Score inputs will be auto-labeled Participant 1 – {participantCount}.
+                                                    Score inputs will be auto-labeled Code {joinedRoom?.code_type === 'letter' ? 'Letter' : 'Number'} {getCodeName(1, joinedRoom?.code_type)} – {getCodeName(participantCount, joinedRoom?.code_type)}.
                                                 </p>
                                             </div>
-
+ 
                                             {/* Preview */}
                                             <div style={{
                                                 background: 'var(--bg-hover)', border: '1px solid var(--border)',
@@ -593,8 +678,8 @@ export default function JudgePage() {
                                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                                                     {Array.from({ length: Math.min(participantCount, 3) }, (_, i) => (
                                                         <div key={i} className="participant-row" style={{ pointerEvents: 'none' }}>
-                                                            <div className="p-num">{i + 1}</div>
-                                                            <div className="p-label">Participant {i + 1}</div>
+                                                            <div className="p-num">{getCodeName(i + 1, joinedRoom?.code_type)}</div>
+                                                            <div className="p-label">Code {joinedRoom?.code_type === 'letter' ? 'Letter' : 'Number'} {getCodeName(i + 1, joinedRoom?.code_type)}</div>
                                                             <div style={{
                                                                 width: 100, height: 38, background: 'white',
                                                                 border: '1.5px solid var(--border)',
@@ -631,7 +716,7 @@ export default function JudgePage() {
                     {/* ── SCORING ── */}
                     {step === 'scoring' && scoringEvent && (
                         <motion.div key="scoring" variants={pageVariants} initial="initial" animate="in" exit="out">
-                            <div style={{ maxWidth: 580, margin: '0 auto' }}>
+                            <div style={{ maxWidth: 840, margin: '0 auto' }}>
                                 {/* Breadcrumb */}
                                 <div className="flex items-c gap-3" style={{ marginBottom: 20 }}>
                                     <motion.button className="btn btn-secondary btn-sm" onClick={goEvents}
@@ -677,8 +762,8 @@ export default function JudgePage() {
 
                                                 return (
                                                     <motion.div key={num} variants={itemV} className="participant-row">
-                                                        <div className="p-num">{num}</div>
-                                                        <div className="p-label">Participant {num}</div>
+                                                        <div className="p-num">{getCodeName(num, joinedRoom?.code_type)}</div>
+                                                        <div className="p-label">Code {joinedRoom?.code_type === 'letter' ? 'Letter' : 'Number'} {getCodeName(num, joinedRoom?.code_type)}</div>
                                                         <div className="p-score-wrap">
                                                             <input
                                                                 id={`score-p${num}`}

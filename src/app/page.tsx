@@ -87,10 +87,11 @@ export default function AuthPage() {
       >
         {/* ── LEFT: Form Panel ── */}
         <div className="auth-form-panel">
-          {/* Logo */}
           <div className="auth-logo-row">
-            <div className="auth-logo-badge">⚡</div>
-            <span className="auth-logo-name">Easy<span>Score</span></span>
+            <div className="auth-logo-badge" style={{ background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', padding: 4 }}>
+              <img src="/logo/logo.png" alt="MiladOne Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+            </div>
+            <span className="auth-logo-name">Milad<span>One</span></span>
           </div>
 
           {/* Greeting */}
@@ -239,9 +240,11 @@ export default function AuthPage() {
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.2, duration: 0.5 }}
           >
-            <div className="auth-right-icon">⚡</div>
+            <div className="auth-right-icon" style={{ background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', padding: 8 }}>
+              <img src="/logo/logo.png" alt="MiladOne Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+            </div>
             <h2 className="auth-right-title">
-              {tab === 'signin' ? 'Glad to see You!' : 'Join Easy-Score!'}
+              {tab === 'signin' ? 'Glad to see You!' : 'Join MiladOne!'}
             </h2>
             <p className="auth-right-desc">
               {tab === 'signin'
@@ -262,7 +265,7 @@ export default function AuthPage() {
 
       {/* Footer */}
       <div className="auth-page-footer">
-        Created by <strong>Rikash</strong> · Easy-Score © {new Date().getFullYear()}
+        Developed by <strong>MeridianTech</strong> · MiladOne © {new Date().getFullYear()}
       </div>
     </div>
   );

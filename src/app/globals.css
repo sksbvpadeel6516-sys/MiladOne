@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ============================================================
-   Premium Design System — Easy-Score
+   Premium Design System — MiladOne
    Light Theme · Indigo-Violet Gradient Primary
    ============================================================ */
 :root {
@@ -98,6 +98,8 @@
 html {
   scroll-behavior: smooth;
   height: 100%;
+  max-width: 100vw;
+  overflow-x: hidden;
 }
 
 body {
@@ -105,6 +107,8 @@ body {
   background: var(--bg-app);
   color: var(--text-primary);
   min-height: 100vh;
+  max-width: 100vw;
+  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-size: 14px;
@@ -196,6 +200,8 @@ h4 {
 .page-layout {
   display: flex;
   min-height: 100vh;
+  max-width: 100vw;
+  overflow-x: hidden;
 }
 
 /* ── Sidebar ───────────────────────────────────────────── */
@@ -378,6 +384,8 @@ h4 {
   flex-direction: column;
   min-height: 100vh;
   transition: margin-left var(--ease);
+  min-width: 0;
+  max-width: 100vw;
 }
 
 /* Layout variant without sidebar (Super Admin) */
@@ -475,7 +483,7 @@ h4 {
 
 .judge-body {
   flex: 1;
-  max-width: 680px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: clamp(24px, 5vw, 40px) clamp(16px, 5vw, 24px);
   width: 100%;
@@ -2502,4 +2510,618 @@ h4 {
   animation: spin 0.65s linear infinite;
   display: inline-block;
   flex-shrink: 0;
+}
+
+/* ──────────────────────────────────────────────────────────
+   Mobile-First Responsive Enhancements
+   Comprehensive mobile fixes for Admin, Judge, Super Admin
+────────────────────────────────────────────────────────── */
+
+/* ── 768px — Tablet / Large Phone ─────────────────────── */
+@media (max-width: 768px) {
+
+  /* --- Global Layout --- */
+  .main-header {
+    padding: 0 16px;
+    height: 52px;
+    gap: 8px;
+  }
+
+  .main-body {
+    padding: 14px 12px;
+  }
+
+  /* --- Cards --- */
+  .card-header {
+    padding: 14px 16px 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .card-body,
+  .card-padded {
+    padding: 14px 16px;
+  }
+
+  .card-footer {
+    padding: 10px 16px;
+  }
+
+  /* --- Tables --- */
+  .table th {
+    padding: 8px 12px;
+    font-size: 0.65rem;
+  }
+
+  .table td {
+    padding: 10px 12px;
+    font-size: 0.82rem;
+  }
+
+  /* --- Stat Cards --- */
+  .stat-card {
+    padding: 14px;
+  }
+
+  .stat-icon {
+    width: 34px;
+    height: 34px;
+    font-size: 0.95rem;
+    margin-bottom: 10px;
+  }
+
+  .stat-value {
+    font-size: 1.3rem;
+  }
+
+  .stat-label {
+    font-size: 0.68rem;
+  }
+
+  /* --- Buttons --- */
+  .btn {
+    padding: 8px 14px;
+    font-size: 0.82rem;
+  }
+
+  .btn-sm {
+    padding: 5px 10px;
+    font-size: 0.75rem;
+  }
+
+  .btn-lg {
+    padding: 10px 20px;
+    font-size: 0.9rem;
+  }
+
+  /* --- Judge Page --- */
+  .judge-header {
+    padding: 0 12px;
+    height: 50px;
+    gap: 6px;
+  }
+
+  .judge-body {
+    padding: 16px 12px;
+  }
+
+  .participant-row {
+    padding: 10px 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .p-num {
+    width: 28px;
+    height: 28px;
+    font-size: 0.7rem;
+  }
+
+  .p-label {
+    font-size: 0.8rem;
+    min-width: 0;
+  }
+
+  .p-score-wrap {
+    width: 90px;
+  }
+
+  .score-input {
+    padding: 7px 8px;
+    font-size: 0.9rem;
+  }
+
+  .p-score-val {
+    width: 30px;
+    font-size: 0.8rem;
+  }
+
+  .event-card {
+    padding: 14px 16px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  /* Steps indicator */
+  .steps {
+    margin-bottom: 16px;
+    gap: 0;
+  }
+
+  .step-num {
+    width: 24px;
+    height: 24px;
+    font-size: 0.68rem;
+  }
+
+  .step-label {
+    font-size: 0.7rem;
+  }
+
+  .step-connector {
+    min-width: 12px;
+    margin: 0 4px;
+  }
+
+  /* Room code */
+  .room-code {
+    font-size: 0.8rem;
+    padding: 4px 9px;
+  }
+
+  /* Toast — move to bottom center on mobile */
+  .toast-container {
+    right: 12px;
+    left: 12px;
+    bottom: 16px;
+  }
+
+  .toast {
+    min-width: auto;
+    max-width: 100%;
+    font-size: 0.82rem;
+    padding: 10px 14px;
+  }
+
+  /* Live badge */
+  .live-badge {
+    font-size: 0.62rem;
+    padding: 2px 6px;
+  }
+
+  /* Empty state */
+  .empty-state {
+    padding: 32px 16px;
+  }
+
+  .empty-state-icon {
+    font-size: 2rem;
+    margin-bottom: 10px;
+  }
+
+  .empty-state h4 {
+    font-size: 0.88rem;
+  }
+
+  .empty-state p {
+    font-size: 0.82rem;
+  }
+
+  /* Badge */
+  .badge {
+    font-size: 0.65rem;
+    padding: 2px 7px;
+  }
+
+  /* Section header */
+  .section-header {
+    margin-bottom: 12px;
+    gap: 8px;
+  }
+
+  /* Category scrollbar hide */
+  .category-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Super Admin header */
+  .no-sidebar .main-header {
+    padding: 0 12px;
+    height: 50px;
+  }
+}
+
+/* ── 480px — Small Phone ──────────────────────────────── */
+@media (max-width: 480px) {
+
+  /* --- Typography --- */
+  h2 {
+    font-size: 1.05rem;
+  }
+
+  h3 {
+    font-size: 0.92rem;
+  }
+
+  h4 {
+    font-size: 0.82rem;
+  }
+
+  /* --- Layout --- */
+  .main-body {
+    padding: 10px 8px;
+  }
+
+  .main-header {
+    padding: 0 10px;
+    height: 48px;
+  }
+
+  /* --- Cards --- */
+  .card {
+    border-radius: var(--r-md);
+  }
+
+  .card-header {
+    padding: 12px 14px 10px;
+  }
+
+  .card-body,
+  .card-padded {
+    padding: 12px 14px;
+  }
+
+  /* --- Tables (card-style on very small screens) --- */
+  .table {
+    font-size: 0.78rem;
+  }
+
+  .table th {
+    padding: 6px 10px;
+    font-size: 0.6rem;
+  }
+
+  .table td {
+    padding: 8px 10px;
+    font-size: 0.78rem;
+  }
+
+  /* --- Stat Cards --- */
+  .stat-card {
+    padding: 12px;
+  }
+
+  .stat-value {
+    font-size: 1.15rem;
+  }
+
+  .stat-label {
+    font-size: 0.62rem;
+  }
+
+  /* --- Judge Page --- */
+  .judge-header {
+    padding: 0 10px;
+    height: 46px;
+  }
+
+  .judge-body {
+    padding: 12px 10px;
+  }
+
+  .participant-row {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .p-num {
+    width: 26px;
+    height: 26px;
+    font-size: 0.65rem;
+  }
+
+  .p-label {
+    font-size: 0.75rem;
+  }
+
+  .p-score-wrap {
+    width: 80px;
+  }
+
+  .score-input {
+    padding: 6px 6px;
+    font-size: 0.85rem;
+  }
+
+  .p-score-val {
+    width: 26px;
+    font-size: 0.75rem;
+  }
+
+  .event-card {
+    padding: 12px 14px;
+    border-radius: var(--r-md);
+    gap: 8px;
+  }
+
+  /* Steps */
+  .steps {
+    margin-bottom: 12px;
+  }
+
+  .step-num {
+    width: 22px;
+    height: 22px;
+    font-size: 0.62rem;
+    border-width: 1.5px;
+  }
+
+  .step-label {
+    font-size: 0.62rem;
+  }
+
+  .step-connector {
+    min-width: 8px;
+    margin: 0 3px;
+  }
+
+  /* Room code */
+  .room-code {
+    font-size: 0.75rem;
+    padding: 3px 8px;
+    letter-spacing: 0.08em;
+  }
+
+  /* Input code */
+  .input-code {
+    font-size: 1.3rem;
+    letter-spacing: 0.15em;
+  }
+
+  /* Buttons */
+  .btn {
+    padding: 7px 12px;
+    font-size: 0.78rem;
+  }
+
+  .btn-sm {
+    padding: 4px 8px;
+    font-size: 0.72rem;
+  }
+
+  .btn-lg {
+    padding: 9px 18px;
+    font-size: 0.85rem;
+  }
+
+  .btn-xl {
+    padding: 11px 22px;
+    font-size: 0.92rem;
+  }
+
+  /* Auth */
+  .auth-card-head {
+    padding: 20px 20px;
+  }
+
+  /* Sidebar */
+  .sidebar-header {
+    padding: 0 14px;
+    height: 54px;
+    gap: 10px;
+  }
+
+  .sidebar-logo-icon {
+    width: 28px;
+    height: 28px;
+    font-size: 14px;
+  }
+
+  .sidebar-logo-text {
+    font-size: 0.9rem;
+  }
+
+  .sidebar-nav {
+    padding: 12px 8px;
+  }
+
+  .sidebar-item {
+    padding: 8px 8px;
+    font-size: 0.82rem;
+    gap: 7px;
+  }
+
+  .sidebar-section-title {
+    font-size: 0.62rem;
+    padding: 0 6px;
+    margin: 8px 0 4px;
+  }
+
+  .sidebar-footer {
+    padding: 10px 8px;
+  }
+
+  .sidebar-user {
+    padding: 7px 8px;
+  }
+
+  .sidebar-avatar {
+    width: 26px;
+    height: 26px;
+    font-size: 0.7rem;
+  }
+
+  .sidebar-email {
+    font-size: 0.7rem;
+  }
+
+  /* Toast */
+  .toast {
+    padding: 9px 12px;
+    font-size: 0.78rem;
+    gap: 8px;
+    border-radius: var(--r-sm);
+  }
+
+  /* Super admin header — compact */
+  .no-sidebar .main-header {
+    padding: 0 10px;
+    height: 46px;
+  }
+
+  /* Progress bar */
+  .progress-track {
+    height: 5px;
+  }
+
+  /* Form */
+  .form-label {
+    font-size: 0.72rem;
+  }
+
+  .input {
+    padding: 8px 12px;
+    font-size: 0.82rem;
+  }
+
+  .input-lg {
+    padding: 10px 14px;
+    font-size: 0.92rem;
+  }
+
+  .select {
+    padding: 8px 30px 8px 12px;
+    font-size: 0.82rem;
+  }
+
+  .input-field {
+    padding: 8px 12px;
+    font-size: 0.82rem;
+  }
+
+  .select-field {
+    padding: 8px 30px 8px 12px;
+    font-size: 0.82rem;
+  }
+}
+
+/* ── 360px — Very Small Phone ─────────────────────────── */
+@media (max-width: 360px) {
+
+  .main-body {
+    padding: 8px 6px;
+  }
+
+  .main-header {
+    padding: 0 8px;
+    height: 44px;
+  }
+
+  h1 {
+    font-size: 1.2rem;
+  }
+
+  h2 {
+    font-size: 0.95rem;
+  }
+
+  h3 {
+    font-size: 0.85rem;
+  }
+
+  .card-header {
+    padding: 10px 12px 8px;
+  }
+
+  .card-body,
+  .card-padded {
+    padding: 10px 12px;
+  }
+
+  .table th {
+    padding: 5px 8px;
+    font-size: 0.55rem;
+  }
+
+  .table td {
+    padding: 7px 8px;
+    font-size: 0.72rem;
+  }
+
+  .judge-header {
+    padding: 0 8px;
+    height: 44px;
+  }
+
+  .judge-body {
+    padding: 10px 8px;
+  }
+
+  .participant-row {
+    padding: 7px 8px;
+    gap: 5px;
+  }
+
+  .p-num {
+    width: 24px;
+    height: 24px;
+    font-size: 0.6rem;
+  }
+
+  .p-label {
+    font-size: 0.7rem;
+  }
+
+  .p-score-wrap {
+    width: 70px;
+  }
+
+  .score-input {
+    padding: 5px 4px;
+    font-size: 0.8rem;
+  }
+
+  .btn {
+    padding: 6px 10px;
+    font-size: 0.72rem;
+  }
+
+  .btn-sm {
+    padding: 3px 7px;
+    font-size: 0.68rem;
+  }
+
+  /* Steps minimal */
+  .step-label {
+    display: none;
+  }
+
+  .step-num {
+    width: 20px;
+    height: 20px;
+    font-size: 0.58rem;
+  }
+
+  .step-connector {
+    min-width: 6px;
+    margin: 0 2px;
+  }
+
+  .no-sidebar .main-header {
+    padding: 0 8px;
+    height: 44px;
+  }
+
+  .stat-value {
+    font-size: 1rem;
+  }
+
+  .stat-label {
+    font-size: 0.58rem;
+  }
+
+  .input-code {
+    font-size: 1.1rem;
+    letter-spacing: 0.1em;
+  }
 }
