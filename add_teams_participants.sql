@@ -28,6 +28,7 @@ CREATE TABLE participants (
     name TEXT NOT NULL,
     chest_number TEXT NOT NULL,
     team_id UUID REFERENCES teams(id) ON DELETE SET NULL,
+    category TEXT DEFAULT 'Senior',
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     UNIQUE(institution_id, chest_number)
 );
@@ -38,12 +39,14 @@ CREATE TABLE participants (
 CREATE TABLE event_participant_mappings (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    participant_number INT NOT NULL CHECK (participant_number >= 1),
+    participant_number INT CHECK (participant_number >= 1),
     participant_id UUID NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
     UNIQUE(event_id, participant_number),
     UNIQUE(event_id, participant_id)
 );
+-- If modifying an existing database table, run:
+-- ALTER TABLE event_participant_mappings ALTER COLUMN participant_number DROP NOT NULL;
 
 -- ============================================================
 -- Enable Realtime
@@ -64,3 +67,6 @@ ALTER TABLE event_participant_mappings ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "teams_all" ON teams FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "participants_all" ON participants FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "mappings_all" ON event_participant_mappings FOR ALL USING (true) WITH CHECK (true);
+
+-- Run this in SQL Editor if modifying an existing participants table:
+-- ALTER TABLE participants ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Senior';

@@ -38,6 +38,53 @@ const getCodeName = (num: number, type: 'number' | 'letter' = 'number') => {
     return String(num);
 };
 
+const generateTeamChestNumber = (
+    teamId: string | null | undefined,
+    teamsList: Team[],
+    existingParticipants: Participant[],
+    offset = 0,
+    excludePartId?: string
+): string => {
+    const activeParts = excludePartId 
+        ? existingParticipants.filter(p => p.id !== excludePartId) 
+        : existingParticipants;
+
+    if (!teamId) {
+        let maxNum = 0;
+        for (const p of activeParts) {
+            if (!p.team_id) {
+                const num = parseInt(p.chest_number.replace(/\D/g, ''), 10);
+                if (!isNaN(num) && num < 100 && num > maxNum) {
+                    maxNum = num;
+                }
+            }
+        }
+        const next = maxNum + 1 + offset;
+        return next.toString().padStart(3, '0');
+    }
+
+    const teamIdx = teamsList.findIndex(t => t.id === teamId);
+    const seriesBase = (teamIdx >= 0 ? teamIdx + 1 : 1) * 100;
+    const seriesMin = seriesBase + 1;
+    const seriesMax = seriesBase + 99;
+
+    let maxInSeries = seriesBase;
+
+    for (const p of activeParts) {
+        if (p.team_id === teamId) {
+            const num = parseInt(p.chest_number.replace(/\D/g, ''), 10);
+            if (!isNaN(num) && num >= seriesMin && num <= seriesMax) {
+                if (num > maxInSeries) {
+                    maxInSeries = num;
+                }
+            }
+        }
+    }
+
+    const nextNum = maxInSeries + 1 + offset;
+    return nextNum.toString();
+};
+
 export default function AdminPage() {
     const router = useRouter();
     const [authReady, setAuthReady] = useState(false);
@@ -58,7 +105,7 @@ export default function AdminPage() {
     const roomsRef = useRef<RoomWithDetails[]>([]);
     roomsRef.current = rooms;
 
-    const [selectedView, setSelectedView] = useState<'overview' | 'teams' | 'participants' | 'championship' | 'individual'>('overview');
+    const [selectedView, setSelectedView] = useState<'overview' | 'teams' | 'participants' | 'achievements' | 'championship' | 'individual'>('overview');
     const [championshipCategory, setChampionshipCategory] = useState<string>('overall');
     const [individualCategory, setIndividualCategory] = useState<string>('overall');
     const [teams, setTeams] = useState<Team[]>([]);
@@ -72,20 +119,38 @@ export default function AdminPage() {
 
     // Participants Management
     const [newPartName, setNewPartName] = useState('');
-    const [newPartChest, setNewPartChest] = useState('');
     const [newPartTeamId, setNewPartTeamId] = useState('');
+    const [newPartCategory, setNewPartCategory] = useState('Kiddies');
+    const [autoGenerateChest, setAutoGenerateChest] = useState(true);
+    const [manualChestInput, setManualChestInput] = useState('');
     const [partSearch, setPartSearch] = useState('');
     const [editingPartId, setEditingPartId] = useState<string | null>(null);
     const [editingPartName, setEditingPartName] = useState('');
     const [editingPartChest, setEditingPartChest] = useState('');
     const [editingPartTeamId, setEditingPartTeamId] = useState('');
+    const [editingPartCategory, setEditingPartCategory] = useState('Senior');
     const [bulkImportText, setBulkImportText] = useState('');
     const [importing, setImporting] = useState(false);
 
-    // Event Mappings
+    // Event Creation by Admin
+    const [showCreateEventModal, setShowCreateEventModal] = useState(false);
+    const [newEventName, setNewEventName] = useState('');
+    const [newEventCategory, setNewEventCategory] = useState('Kiddies');
+    const [newEventCustomCategory, setNewEventCustomCategory] = useState('');
+    const [selectedParticipantIdsForEvent, setSelectedParticipantIdsForEvent] = useState<string[]>([]);
+    const [eventParticipantSearch, setEventParticipantSearch] = useState('');
+    const [eventCategoryFilter, setEventCategoryFilter] = useState<string>('Kiddies');
+    const [creatingEvent, setCreatingEvent] = useState(false);
+
+    // Event Mappings & Live Code Assignment
     const [mappingEventId, setMappingEventId] = useState<string | null>(null);
-    const [localMappingInputs, setLocalMappingInputs] = useState<Record<number, string>>({});
-    
+    const [localCodeInputs, setLocalCodeInputs] = useState<Record<string, string>>({});
+    const [deletingEvent, setDeletingEvent] = useState<{ id: string; name: string } | null>(null);
+
+    // Participant Achievement History Modal
+    const [viewingHistoryParticipant, setViewingHistoryParticipant] = useState<Participant | null>(null);
+    const [achievementSearch, setAchievementSearch] = useState('');
+
     // First load reference to prevent loading flashes
     const firstLoadRef = useRef(true);
 
@@ -105,221 +170,164 @@ export default function AdminPage() {
                     return;
                 }
                 const email = session.user.email;
-                const emailLower = email.toLowerCase();
-                const { data: inst, error } = await supabase
+                const { data: inst } = await supabase
                     .from('institutions')
-                    .select('id, is_active, name')
-                    .eq('admin_email', emailLower)
+                    .select('id, name')
+                    .eq('admin_email', email.toLowerCase())
                     .maybeSingle();
+
                 if (cancelled) return;
-                if (error) {
-                    console.error('Admin auth check failed:', error);
-                    router.replace('/');
+                if (!inst) {
+                    router.replace('/judge');
                     return;
                 }
-                if (inst?.is_active) {
-                    setUserEmail(email);
-                    setInstitutionName(inst.name ?? '');
-                    setInstitutionId(inst.id);
-                    setAuthReady(true);
-                } else {
-                    router.replace('/');
-                }
+
+                setUserEmail(email);
+                setInstitutionName(inst.name);
+                setInstitutionId(inst.id);
+                setAuthReady(true);
             })
             .catch(() => { if (!cancelled) router.replace('/'); });
         return () => { cancelled = true; };
     }, [router]);
 
-
-    const loadAll = useCallback(async () => {
-        if (!institutionId) return;
+    const loadRooms = useCallback(async (instId: string) => {
         if (firstLoadRef.current) {
             setLoading(true);
         }
         try {
-            const { data: rawRooms, error: rErr } = await supabase
-                .from('rooms').select('*')
-                .eq('institution_id', institutionId)
-                .order('created_at', { ascending: false });
-            if (rErr) throw rErr;
+            const { data: rData } = await supabase.from('rooms').select('*')
+                .eq('institution_id', instId).order('created_at', { ascending: false });
+            if (!rData) return;
 
-            // Fetch teams and participants always even if no rooms exist yet
-            const [teamsRes, participantsRes] = await Promise.all([
-                supabase.from('teams').select('*')
-                    .eq('institution_id', institutionId)
-                    .order('name', { ascending: true }),
-                supabase.from('participants').select('*')
-                    .eq('institution_id', institutionId)
-                    .order('name', { ascending: true }),
-            ]);
-            const loadedTeams = (teamsRes.data as Team[]) || [];
-            const loadedParticipants = (participantsRes.data as Participant[]) || [];
-            setTeams(loadedTeams);
-            setParticipants(loadedParticipants);
-
-            if (!rawRooms || rawRooms.length === 0) { 
-                setRooms([]); 
-                setMappings([]);
-                return; 
+            const roomIds = rData.map((r) => r.id);
+            if (roomIds.length === 0) {
+                setRooms([]);
+                setLoading(false);
+                firstLoadRef.current = false;
+                return;
             }
 
-            const roomIds = (rawRooms as Room[]).map((r) => r.id);
-            const [judgesRes, eventsRes] = await Promise.all([
+            const [{ data: jData }, { data: eData }] = await Promise.all([
                 supabase.from('judges').select('*').in('room_id', roomIds),
-                supabase.from('events').select('*')
-                    .in('room_id', roomIds)
-                    .eq('institution_id', institutionId)
-                    .order('created_at', { ascending: false }),
+                supabase.from('events').select('*').in('room_id', roomIds).order('created_at', { ascending: false }),
             ]);
-            const allJudges = (judgesRes.data as Judge[]) || [];
-            const allEvents = (eventsRes.data as Event[]) || [];
 
-            let allScores: Score[] = [];
-            let loadedMappings: EventParticipantMapping[] = [];
-            if (allEvents.length > 0) {
-                const eventIds = allEvents.map((e) => e.id);
-                const [scoresRes, mappingsRes] = await Promise.all([
-                    supabase.from('scores').select('*')
-                        .in('event_id', eventIds)
-                        .eq('institution_id', institutionId)
-                        .order('created_at', { ascending: true }),
-                    supabase.from('event_participant_mappings').select('*')
-                        .in('event_id', eventIds)
-                ]);
-                allScores = (scoresRes.data as Score[]) || [];
-                loadedMappings = (mappingsRes.data as EventParticipantMapping[]) || [];
-            }
-            setMappings(loadedMappings);
+            const eventIds = (eData || []).map((e) => e.id);
+            const { data: sData } = eventIds.length > 0
+                ? await supabase.from('scores').select('*').in('event_id', eventIds)
+                : { data: [] };
 
-            const withDetails: RoomWithDetails[] = (rawRooms as Room[]).map((r) => {
-                const js = allJudges.filter((j) => j.room_id === r.id);
-                const evs = allEvents.filter((e) => e.room_id === r.id).map((ev) => {
-                    const scs = allScores.filter((s) => s.event_id === ev.id);
-                    return { ...ev, scores: scs };
-                });
-                return { ...r, judges: js, events: evs };
+            const structured: RoomWithDetails[] = rData.map((r) => {
+                const roomEvents = (eData || [])
+                    .filter((e) => e.room_id === r.id)
+                    .map((e) => ({
+                        ...e,
+                        scores: (sData || []).filter((s) => s.event_id === e.id),
+                    }));
+                return {
+                    ...r,
+                    judges: (jData || []).filter((j) => j.room_id === r.id),
+                    events: roomEvents,
+                };
             });
-            setRooms(withDetails);
-        } catch (err) {
-            const message = err instanceof Error ? err.message : 'Failed to load data.';
-            if (message.includes('401') || message.includes('JWT')) {
-                showToast('Session expired or missing keys. Please re-login.', 'error');
-                router.replace('/');
-            } else {
-                showToast(message, 'error');
-            }
-            console.error(err);
+
+            setRooms(structured);
         } finally {
             setLoading(false);
             firstLoadRef.current = false;
         }
-    }, [showToast, institutionId, router]);
+    }, []);
+
+    const loadTeamsAndParticipants = useCallback(async (instId: string) => {
+        const [{ data: tData }, { data: pData }, { data: mData }] = await Promise.all([
+            supabase.from('teams').select('*').eq('institution_id', instId).order('name', { ascending: true }),
+            supabase.from('participants').select('*').eq('institution_id', instId).order('created_at', { ascending: true }),
+            supabase.from('event_participant_mappings').select('*'),
+        ]);
+
+        if (tData) setTeams(tData);
+        if (pData) setParticipants(pData);
+        if (mData) setMappings(mData);
+    }, []);
 
     useEffect(() => {
         if (!authReady || !institutionId) return;
-        loadAll();
-    }, [authReady, loadAll, institutionId]);
+        loadRooms(institutionId);
+        loadTeamsAndParticipants(institutionId);
 
-    useEffect(() => {
-        if (!authReady || !institutionId) return;
-        const ch = supabase.channel(`admin-rt-${institutionId}`)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'judges' }, loadAll)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, loadAll)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'scores' }, loadAll)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, loadAll)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'teams' }, loadAll)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'participants' }, loadAll)
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'event_participant_mappings' }, loadAll)
+        const ch = supabase.channel(`inst-realtime-${institutionId}`)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `institution_id=eq.${institutionId}` }, () => loadRooms(institutionId))
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'judges' }, () => loadRooms(institutionId))
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'events', filter: `institution_id=eq.${institutionId}` }, () => loadRooms(institutionId))
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'scores', filter: `institution_id=eq.${institutionId}` }, () => loadRooms(institutionId))
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'teams', filter: `institution_id=eq.${institutionId}` }, () => loadTeamsAndParticipants(institutionId))
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'participants', filter: `institution_id=eq.${institutionId}` }, () => loadTeamsAndParticipants(institutionId))
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'event_participant_mappings' }, () => loadTeamsAndParticipants(institutionId))
             .subscribe();
-        return () => { supabase.removeChannel(ch); };
-    }, [authReady, loadAll, institutionId]);
 
-    const generateCode = () => {
-        const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-        return Array.from({ length: 6 }, () => c[Math.floor(Math.random() * c.length)]).join('');
+        return () => { supabase.removeChannel(ch); };
+    }, [authReady, institutionId, loadRooms, loadTeamsAndParticipants]);
+
+    const generateRoomCode = () => {
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        let result = '';
+        for (let i = 0; i < 6; i++) {
+            result += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return result;
     };
 
-    const handleCreateRoom = async () => {
-        if (!institutionId) return;
+    const handleCreateRoom = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!institutionId || !userEmail) return;
         setCreating(true);
         try {
-            let code = '', attempts = 0;
-            while (attempts < 10) {
-                const c = generateCode();
-                const { data } = await supabase.from('rooms').select('id').eq('secret_code', c).maybeSingle();
-                if (!data) { code = c; break; }
-                attempts++;
-            }
-            if (!code) throw new Error('Could not generate a unique code.');
+            const secretCode = generateRoomCode();
             const { error } = await supabase.from('rooms').insert({
-                secret_code: code, 
-                judge_count_required: newRoomJudgeCount, 
+                institution_id: institutionId,
+                secret_code: secretCode,
+                judge_count_required: newRoomJudgeCount,
                 code_type: newRoomCodeType,
                 created_by: userEmail,
-                institution_id: institutionId
             });
-            if (error) throw new Error(`DB error [${error.code}]: ${error.message}`);
-            showToast(`✓ Room created! Code: ${code}`, 'success');
+            if (error) throw error;
+            showToast(`Room ${secretCode} created successfully!`, 'success');
+            loadRooms(institutionId);
         } catch (err: unknown) {
-            showToast(err instanceof Error ? err.message : JSON.stringify(err), 'error');
+            showToast(err instanceof Error ? err.message : 'Failed to create room.', 'error');
         } finally {
             setCreating(false);
         }
-
     };
 
-    const handleDeleteRoom = async (id: string) => {
+    const handleDeleteRoom = async (roomId: string) => {
+        if (!institutionId) return;
         try {
-            const { error } = await supabase.from('rooms').delete().eq('id', id);
+            const { error } = await supabase.from('rooms').delete().eq('id', roomId);
             if (error) throw error;
-            if (selectedRoomId === id) setSelectedRoomId(null);
-            showToast('Room deleted successfully.', 'success');
-        } catch (err) {
-            console.error(err);
-            showToast('Failed to delete room.', 'error');
+            showToast('Room deleted.', 'success');
+            if (selectedRoomId === roomId) setSelectedRoomId(null);
+            loadRooms(institutionId);
+        } catch (err: unknown) {
+            showToast(err instanceof Error ? err.message : 'Delete failed.', 'error');
         } finally {
             setConfirmDeleteRoom(null);
         }
     };
 
     const handleRemoveJudge = async (roomId: string, judgeId: string) => {
+        if (!institutionId) return;
         try {
             const { error } = await supabase.from('judges').delete().eq('id', judgeId);
             if (error) throw error;
-            showToast('Judge removed from room.', 'success');
-        } catch (err) {
-            console.error(err);
-            showToast('Failed to remove judge.', 'error');
+            showToast('Judge removed.', 'success');
+            loadRooms(institutionId);
+        } catch (err: unknown) {
+            showToast(err instanceof Error ? err.message : 'Remove failed.', 'error');
         } finally {
             setConfirmRemoveJudge(null);
         }
-    };
-
-    const copyCode = (code: string) => {
-        navigator.clipboard.writeText(code);
-        showToast(`"${code}" copied!`, 'info');
-    };
-
-    const handleSignOut = async () => {
-        await supabase.auth.signOut();
-        router.replace('/');
-    };
-
-    const selectRoom = (id: string | null) => {
-        setSelectedRoomId(id);
-        setRoomTab('overview');
-        setSidebarOpen(false);
-        setMappingEventId(null);
-    };
-
-    const selectView = (view: 'overview' | 'teams' | 'participants' | 'championship' | 'individual') => {
-        setSelectedRoomId(null);
-        setSelectedView(view);
-        setSidebarOpen(false);
-    };
-
-    const getParticipantCount = (teamId: string) => {
-        return participants.filter(p => p.team_id === teamId).length;
     };
 
     const handleCreateTeam = async (e: React.FormEvent) => {
@@ -328,29 +336,23 @@ export default function AdminPage() {
         try {
             const { error } = await supabase
                 .from('teams')
-                .insert({
-                    name: newTeamName.trim(),
-                    institution_id: institutionId
-                });
+                .insert({ name: newTeamName.trim(), institution_id: institutionId });
             if (error) throw error;
             showToast(`Team "${newTeamName.trim()}" created!`, 'success');
             setNewTeamName('');
-        } catch (err: any) {
-            showToast(err.message || 'Failed to create team', 'error');
+        } catch (err: unknown) {
+            showToast(err instanceof Error ? err.message : 'Failed to create team', 'error');
         }
     };
 
     const handleDeleteTeam = async (id: string) => {
-        if (!confirm('Are you sure you want to delete this team? Participants will be unassigned.')) return;
+        if (!confirm('Are you sure you want to delete this team? Participants will remain but lose their team association.')) return;
         try {
-            const { error } = await supabase
-                .from('teams')
-                .delete()
-                .eq('id', id);
+            const { error } = await supabase.from('teams').delete().eq('id', id);
             if (error) throw error;
             showToast('Team deleted', 'success');
-        } catch (err: any) {
-            showToast(err.message || 'Failed to delete team', 'error');
+        } catch (err: unknown) {
+            showToast(err instanceof Error ? err.message : 'Failed to delete team', 'error');
         }
     };
 
@@ -364,30 +366,54 @@ export default function AdminPage() {
             if (error) throw error;
             showToast('Team renamed successfully', 'success');
             setEditingTeamId(null);
-        } catch (err: any) {
-            showToast(err.message || 'Failed to rename team', 'error');
+        } catch (err: unknown) {
+            showToast(err instanceof Error ? err.message : 'Failed to rename team', 'error');
         }
     };
 
+    // Auto-generate or Manual Chest Numbers for new participants
     const handleCreateParticipant = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!newPartName.trim() || !newPartChest.trim() || !institutionId) return;
+        if (!newPartName.trim() || !institutionId) return;
+
+        let chestNum = '';
+        if (autoGenerateChest) {
+            chestNum = generateTeamChestNumber(newPartTeamId, teams, participants);
+        } else {
+            chestNum = manualChestInput.trim().toUpperCase();
+            if (!chestNum) {
+                showToast('Please enter a chest number.', 'error');
+                return;
+            }
+        }
+
+        // Uniqueness validation
+        const exists = participants.some(p => p.chest_number.toLowerCase() === chestNum.toLowerCase());
+        if (exists) {
+            showToast(`Chest number "${chestNum}" is already assigned to another participant.`, 'error');
+            return;
+        }
+
         try {
-            const { error } = await supabase
+            const insertPayload: Record<string, any> = {
+                name: newPartName.trim(),
+                chest_number: chestNum,
+                team_id: newPartTeamId || null,
+                category: newPartCategory || 'Kiddies',
+                institution_id: institutionId
+            };
+
+            let { error } = await supabase
                 .from('participants')
-                .insert({
-                    name: newPartName.trim(),
-                    chest_number: newPartChest.trim().toUpperCase(),
-                    team_id: newPartTeamId || null,
-                    institution_id: institutionId
-                });
+                .insert(insertPayload);
+
             if (error) throw error;
-            showToast(`Participant "${newPartName.trim()}" added!`, 'success');
+            showToast(`Participant "${newPartName.trim()}" added with Chest No. ${chestNum}!`, 'success');
             setNewPartName('');
-            setNewPartChest('');
-            setNewPartTeamId('');
+            setManualChestInput('');
         } catch (err: any) {
-            showToast(err.message || 'Failed to add participant', 'error');
+            const errMsg = err?.message || err?.details || (err instanceof Error ? err.message : 'Failed to add participant');
+            showToast(errMsg, 'error');
         }
     };
 
@@ -401,59 +427,78 @@ export default function AdminPage() {
             if (error) throw error;
             showToast('Participant deleted', 'success');
         } catch (err: any) {
-            showToast(err.message || 'Failed to delete participant', 'error');
+            const errMsg = err?.message || err?.details || (err instanceof Error ? err.message : 'Failed to delete participant');
+            showToast(errMsg, 'error');
         }
     };
 
     const handleSavePartEdit = async (id: string) => {
         if (!editingPartName.trim() || !editingPartChest.trim()) return;
+
+        const chestNum = editingPartChest.trim().toUpperCase();
+
+        // Uniqueness validation against other participants
+        const exists = participants.some(p => p.id !== id && p.chest_number.toLowerCase() === chestNum.toLowerCase());
+        if (exists) {
+            showToast(`Chest number "${chestNum}" is already assigned to another participant.`, 'error');
+            return;
+        }
+
         try {
-            const { error } = await supabase
+            const updatePayload: Record<string, any> = {
+                name: editingPartName.trim(),
+                chest_number: chestNum,
+                team_id: editingPartTeamId || null,
+                category: editingPartCategory || 'Kiddies'
+            };
+
+            let { error } = await supabase
                 .from('participants')
-                .update({
-                    name: editingPartName.trim(),
-                    chest_number: editingPartChest.trim().toUpperCase(),
-                    team_id: editingPartTeamId || null
-                })
+                .update(updatePayload)
                 .eq('id', id);
+
             if (error) throw error;
-            showToast('Participant updated', 'success');
+
+            // Optimistically update local participant state
+            setParticipants(prev => prev.map(p => p.id === id ? { ...p, ...updatePayload, category: editingPartCategory || 'Senior' } : p));
+
+            showToast('Participant updated successfully!', 'success');
             setEditingPartId(null);
         } catch (err: any) {
-            showToast(err.message || 'Failed to update participant', 'error');
+            const errMsg = err?.message || err?.details || (err instanceof Error ? err.message : 'Failed to update participant');
+            showToast(errMsg, 'error');
         }
     };
 
+    // Bulk Import with Team-Based Series Chest Numbers & Category
     const handleBulkImport = async () => {
         if (!bulkImportText.trim() || !institutionId) return;
         setImporting(true);
         try {
             const lines = bulkImportText.split('\n');
-            const parsedRows: { name: string; chest: string; teamName: string }[] = [];
-            
+            const parsedRows: { name: string; teamName: string; category: string }[] = [];
+
             for (const line of lines) {
                 if (!line.trim()) continue;
                 const parts = line.includes('\t') ? line.split('\t') : line.split(',');
-                if (parts.length >= 2) {
-                    const name = parts[0]?.trim();
-                    const chest = parts[1]?.trim().toUpperCase();
-                    const teamName = parts[2]?.trim() || '';
-                    if (name && chest) {
-                        parsedRows.push({ name, chest, teamName });
-                    }
+                const name = parts[0]?.trim();
+                const teamName = parts[1]?.trim() || '';
+                const category = parts[2]?.trim() || 'Senior';
+                if (name) {
+                    parsedRows.push({ name, teamName, category });
                 }
             }
-            
+
             if (parsedRows.length === 0) {
-                showToast('No valid rows found. Format: Name, ChestNumber, TeamName', 'error');
+                showToast('No valid rows found. Format: Participant Name, TeamName, Category', 'error');
                 setImporting(false);
                 return;
             }
-            
+
             const uniqueTeamNames = [...new Set(parsedRows.map(r => r.teamName).filter(Boolean))];
             const teamMap = new Map<string, string>();
             teams.forEach(t => teamMap.set(t.name.toLowerCase(), t.id));
-            
+
             for (const tName of uniqueTeamNames) {
                 const lower = tName.toLowerCase();
                 if (!teamMap.has(lower)) {
@@ -468,94 +513,217 @@ export default function AdminPage() {
                     }
                 }
             }
-            
+
             const { data: updatedTeams } = await supabase.from('teams').select('*').eq('institution_id', institutionId);
+            const teamsListForImport = updatedTeams || teams;
             if (updatedTeams) setTeams(updatedTeams);
-            
+
             let successCount = 0;
             let errorCount = 0;
-            
+            const teamOffsets = new Map<string, number>();
+
             for (const row of parsedRows) {
                 const teamId = row.teamName ? teamMap.get(row.teamName.toLowerCase()) || null : null;
-                const { error } = await supabase
+                const teamKey = teamId || 'none';
+                const offset = teamOffsets.get(teamKey) || 0;
+
+                const autoChest = generateTeamChestNumber(teamId, teamsListForImport, participants, offset);
+                teamOffsets.set(teamKey, offset + 1);
+
+                const insertPayload: Record<string, any> = {
+                    name: row.name,
+                    chest_number: autoChest,
+                    team_id: teamId,
+                    category: row.category || 'Kiddies',
+                    institution_id: institutionId
+                };
+
+                let { error } = await supabase
                     .from('participants')
-                    .upsert({
-                        name: row.name,
-                        chest_number: row.chest,
-                        team_id: teamId,
-                        institution_id: institutionId
-                    }, { onConflict: 'institution_id,chest_number' });
+                    .insert(insertPayload);
+
                 if (error) {
-                    console.error(error);
                     errorCount++;
                 } else {
                     successCount++;
                 }
             }
-            
-            showToast(`Import completed! Successfully imported ${successCount} participants. Errors: ${errorCount}`, successCount > 0 ? 'success' : 'error');
+
+            showToast(`Bulk Import Complete: ${successCount} added, ${errorCount} failed.`, successCount > 0 ? 'success' : 'error');
             setBulkImportText('');
-        } catch (err: any) {
-            showToast(err.message || 'Import failed', 'error');
+            loadTeamsAndParticipants(institutionId);
+        } catch (err: unknown) {
+            showToast(err instanceof Error ? err.message : 'Bulk import failed.', 'error');
         } finally {
             setImporting(false);
         }
     };
 
-    const startMapping = (ev: Event) => {
-        setMappingEventId(ev.id);
-        const initInputs: Record<number, string> = {};
-        const eventM = mappings.filter(m => m.event_id === ev.id);
-        eventM.forEach(m => {
-            const part = participants.find(p => p.id === m.participant_id);
-            if (part) {
-                initInputs[m.participant_number] = part.chest_number;
-            }
-        });
-        setLocalMappingInputs(initInputs);
+    // Admin Event Creation Handler
+    const handleAdminCreateEvent = async (e: React.FormEvent) => {
+        e.preventDefault();
+        const selectedRoom = rooms.find(r => r.id === selectedRoomId);
+        if (!selectedRoom || !institutionId || !newEventName.trim()) return;
+
+        const category = newEventCategory === 'Other' ? newEventCustomCategory.trim() : newEventCategory;
+        if (!category) {
+            showToast('Please specify a category.', 'error');
+            return;
+        }
+
+        if (selectedParticipantIdsForEvent.length === 0) {
+            showToast('Please select at least 1 participant for this event.', 'error');
+            return;
+        }
+
+        setCreatingEvent(true);
+        try {
+            const { data: event, error: evErr } = await supabase
+                .from('events')
+                .insert({
+                    room_id: selectedRoom.id,
+                    institution_id: institutionId,
+                    event_name: newEventName.trim(),
+                    category,
+                    participant_count: selectedParticipantIdsForEvent.length,
+                    created_by: userEmail,
+                })
+                .select('*')
+                .single();
+
+            if (evErr || !event) throw evErr || new Error('Failed to create event');
+
+            // Create initial participant mappings without pre-filling code numbers
+            const mappingPayload = selectedParticipantIdsForEvent.map((partId) => ({
+                event_id: event.id,
+                participant_number: null,
+                participant_id: partId
+            }));
+
+            const { error: mapErr } = await supabase.from('event_participant_mappings').insert(mappingPayload);
+            if (mapErr) console.error('Mapping creation warning:', mapErr);
+
+            showToast(`Event "${event.event_name}" created with ${selectedParticipantIdsForEvent.length} participants!`, 'success');
+            setShowCreateEventModal(false);
+            setNewEventName('');
+            setNewEventCustomCategory('');
+            setSelectedParticipantIdsForEvent([]);
+            loadRooms(institutionId);
+        } catch (err: unknown) {
+            showToast(err instanceof Error ? err.message : 'Failed to create event', 'error');
+        } finally {
+            setCreatingEvent(false);
+        }
     };
 
-    const saveSingleMapping = async (num: number, chestNum: string) => {
-        if (!mappingEventId) return;
-        const cleanChest = chestNum.trim();
-        if (!cleanChest) {
+    const parseCodeInputToNum = (inputStr: string): number | null => {
+        const clean = inputStr.trim().toUpperCase();
+        if (!clean) return null;
+        if (/^\d+$/.test(clean)) return parseInt(clean, 10);
+        if (/^[A-Z]$/.test(clean)) return clean.charCodeAt(0) - 64;
+        const match = clean.match(/\d+/);
+        if (match) return parseInt(match[0], 10);
+        return null;
+    };
+
+    const startMapping = (ev: Event) => {
+        setMappingEventId(ev.id);
+        const eventM = mappings.filter(m => m.event_id === ev.id);
+        const initInputs: Record<string, string> = {};
+        eventM.forEach(m => {
+            initInputs[m.participant_id] = m.participant_number ? getCodeName(m.participant_number, selectedRoom?.code_type) : '';
+        });
+        setLocalCodeInputs(initInputs);
+    };
+
+    const handleSaveTypedCode = async (eventId: string, participantId: string, rawInput: string) => {
+        const codeNum = parseCodeInputToNum(rawInput);
+        try {
+            if (codeNum !== null) {
+                // Remove existing mapping for this code number in this event (prevents duplicate code numbers)
+                await supabase
+                    .from('event_participant_mappings')
+                    .delete()
+                    .eq('event_id', eventId)
+                    .eq('participant_number', codeNum);
+
+                // Upsert mapping for this participant
+                const { error } = await supabase
+                    .from('event_participant_mappings')
+                    .upsert({
+                        event_id: eventId,
+                        participant_id: participantId,
+                        participant_number: codeNum
+                    }, { onConflict: 'event_id,participant_id' });
+
+                if (error) throw error;
+                showToast(`Assigned Code ${getCodeName(codeNum, selectedRoom?.code_type)}`, 'success');
+            } else {
+                // Clear participant_number if input is blank
+                const { error } = await supabase
+                    .from('event_participant_mappings')
+                    .update({ participant_number: null })
+                    .eq('event_id', eventId)
+                    .eq('participant_id', participantId);
+
+                if (error) {
+                    // Fallback to updating or keeping row with null
+                    await supabase
+                        .from('event_participant_mappings')
+                        .upsert({
+                            event_id: eventId,
+                            participant_id: participantId,
+                            participant_number: null
+                        }, { onConflict: 'event_id,participant_id' });
+                }
+
+                if (rawInput.trim()) {
+                    showToast('Invalid code format. Enter a number or letter.', 'error');
+                } else {
+                    showToast('Code cleared', 'info');
+                }
+            }
+
+            if (institutionId) loadRooms(institutionId);
+        } catch (err: any) {
+            showToast(err?.message || 'Failed to save code', 'error');
+        }
+    };
+
+    const handleClearAllCodes = async (eventId: string) => {
+        try {
             const { error } = await supabase
                 .from('event_participant_mappings')
-                .delete()
-                .eq('event_id', mappingEventId)
-                .eq('participant_number', num);
-            if (error) {
-                showToast('Failed to clear mapping', 'error');
-            } else {
-                showToast(`Cleared mapping for Code ${getCodeName(num, selectedRoom?.code_type)}`, 'success');
-            }
-            return;
-        }
-        
-        const part = participants.find(p => p.chest_number.toLowerCase() === cleanChest.toLowerCase());
-        if (!part) {
-            showToast(`No participant found with Chest Number: ${cleanChest}`, 'error');
-            return;
-        }
-        
-        const isDuplicate = Object.entries(localMappingInputs).some(([k, v]) => Number(k) !== num && v.trim().toLowerCase() === cleanChest.toLowerCase());
-        if (isDuplicate) {
-            showToast(`Chest number ${cleanChest} is already mapped to another code in this event!`, 'error');
-            return;
-        }
+                .update({ participant_number: null })
+                .eq('event_id', eventId);
 
-        const { error } = await supabase
-            .from('event_participant_mappings')
-            .upsert({
-                event_id: mappingEventId,
-                participant_number: num,
-                participant_id: part.id
-            }, { onConflict: 'event_id,participant_number' });
-            
-        if (error) {
-            showToast(error.message, 'error');
-        } else {
-            showToast(`Mapped Code ${getCodeName(num, selectedRoom?.code_type)} to ${part.name}`, 'success');
+            if (error) throw error;
+
+            setLocalCodeInputs({});
+            showToast('Cleared all code numbers for this event!', 'info');
+            if (institutionId) loadRooms(institutionId);
+        } catch (err: any) {
+            showToast(err?.message || 'Failed to clear codes', 'error');
+        }
+    };
+
+    const confirmDeleteEvent = async (eventId: string, eventName: string) => {
+        try {
+            const { error } = await supabase
+                .from('events')
+                .delete()
+                .eq('id', eventId);
+
+            if (error) throw error;
+
+            if (mappingEventId === eventId) {
+                setMappingEventId(null);
+            }
+
+            showToast(`Event "${eventName}" deleted successfully!`, 'success');
+            if (institutionId) loadRooms(institutionId);
+        } catch (err: any) {
+            showToast(err?.message || 'Failed to delete event', 'error');
         }
     };
 
@@ -586,21 +754,19 @@ export default function AdminPage() {
     const calculateTeamStandings = (selectedCat: string = 'overall') => {
         const stand = new Map<string, { categoryPoints: Record<string, number>; overallPoints: number }>();
         teams.forEach(t => stand.set(t.id, { categoryPoints: {}, overallPoints: 0 }));
-        
+
         rooms.forEach(room => {
             room.events.forEach(event => {
                 const normCat = event.category ? normalizeCategoryName(event.category) : '';
                 const nums = Array.from({ length: event.participant_count }, (_, i) => i + 1);
-                
-                // Calculate totals and sort by total score to determine ranks
+
                 const ranked = nums.map((num) => {
                     const ps = event.scores.filter((s) => s.participant_number === num);
                     const total = ps.reduce((sum, s) => sum + s.score, 0);
                     const avg = ps.length > 0 ? total / ps.length : 0;
                     return { num, total, avg, hasScores: ps.length > 0 };
                 }).filter(r => r.hasScores).sort((a, b) => b.total - a.total);
-                
-                // Assign rank points (handling ties)
+
                 let currentRank = 1;
                 let prevTotal = -1;
                 ranked.forEach((res, index) => {
@@ -608,21 +774,19 @@ export default function AdminPage() {
                         currentRank = index + 1;
                     }
                     prevTotal = res.total;
-                    
-                    // Rank points: 1st=5, 2nd=3, 3rd=1
+
                     let rankPoints = 0;
                     if (currentRank === 1) rankPoints = 5;
                     else if (currentRank === 2) rankPoints = 3;
                     else if (currentRank === 3) rankPoints = 1;
-                    
-                    // Grade points: A(≥80)=5, B(≥60)=3, C(<60)=1
+
                     let gradePoints = 0;
                     if (res.avg >= 80) gradePoints = 5;
                     else if (res.avg >= 60) gradePoints = 3;
                     else gradePoints = 1;
-                    
+
                     const totalPoints = rankPoints + gradePoints;
-                    
+
                     const mapping = mappings.find(m => m.event_id === event.id && m.participant_number === res.num);
                     if (mapping) {
                         const part = participants.find(p => p.id === mapping.participant_id);
@@ -639,7 +803,7 @@ export default function AdminPage() {
                 });
             });
         });
-        
+
         return Array.from(stand.entries()).map(([teamId, data]) => {
             const team = teams.find(t => t.id === teamId);
             let points = data.overallPoints;
@@ -659,21 +823,19 @@ export default function AdminPage() {
     const calculateIndividualStandings = (selectedCat: string = 'overall') => {
         const stand = new Map<string, { categoryPoints: Record<string, number>; overallPoints: number }>();
         participants.forEach(p => stand.set(p.id, { categoryPoints: {}, overallPoints: 0 }));
-        
+
         rooms.forEach(room => {
             room.events.forEach(event => {
                 const normCat = event.category ? normalizeCategoryName(event.category) : '';
                 const nums = Array.from({ length: event.participant_count }, (_, i) => i + 1);
-                
-                // Calculate totals and sort by total score to determine ranks
+
                 const ranked = nums.map((num) => {
                     const ps = event.scores.filter((s) => s.participant_number === num);
                     const total = ps.reduce((sum, s) => sum + s.score, 0);
                     const avg = ps.length > 0 ? total / ps.length : 0;
                     return { num, total, avg, hasScores: ps.length > 0 };
                 }).filter(r => r.hasScores).sort((a, b) => b.total - a.total);
-                
-                // Assign rank points (handling ties)
+
                 let currentRank = 1;
                 let prevTotal = -1;
                 ranked.forEach((res, index) => {
@@ -681,21 +843,19 @@ export default function AdminPage() {
                         currentRank = index + 1;
                     }
                     prevTotal = res.total;
-                    
-                    // Rank points: 1st=5, 2nd=3, 3rd=1
+
                     let rankPoints = 0;
                     if (currentRank === 1) rankPoints = 5;
                     else if (currentRank === 2) rankPoints = 3;
                     else if (currentRank === 3) rankPoints = 1;
-                    
-                    // Grade points: A(≥80)=5, B(≥60)=3, C(<60)=1
+
                     let gradePoints = 0;
                     if (res.avg >= 80) gradePoints = 5;
                     else if (res.avg >= 60) gradePoints = 3;
                     else gradePoints = 1;
-                    
+
                     const totalPoints = rankPoints + gradePoints;
-                    
+
                     const mapping = mappings.find(m => m.event_id === event.id && m.participant_number === res.num);
                     if (mapping) {
                         const cur = stand.get(mapping.participant_id);
@@ -709,9 +869,10 @@ export default function AdminPage() {
                 });
             });
         });
-        
+
         return Array.from(stand.entries()).map(([partId, data]) => {
             const part = participants.find(p => p.id === partId);
+            const team = part && part.team_id ? teams.find(t => t.id === part.team_id) : null;
             let points = data.overallPoints;
             if (selectedCat !== 'overall') {
                 points = data.categoryPoints[selectedCat] || 0;
@@ -720,7 +881,7 @@ export default function AdminPage() {
                 id: partId,
                 name: part ? part.name : 'Unknown Participant',
                 chestNumber: part ? part.chest_number : '',
-                teamName: part && part.team_id ? teams.find(t => t.id === part.team_id)?.name || '' : '',
+                teamName: team ? team.name : '',
                 points,
                 categoryPoints: data.categoryPoints,
                 overallPoints: data.overallPoints
@@ -728,281 +889,397 @@ export default function AdminPage() {
         }).sort((a, b) => b.points - a.points);
     };
 
-    const totalJudges = rooms.reduce((s, r) => s + r.judges.length, 0);
-    const totalEvents = rooms.reduce((s, r) => s + r.events.length, 0);
-    const totalScores = rooms.reduce((s, r) => s + r.events.reduce((es, ev) => es + ev.scores.length, 0), 0);
-    const selectedRoom = rooms.find((r) => r.id === selectedRoomId) ?? null;
-    const initials = userEmail.charAt(0).toUpperCase();
+    // Calculate Achievement History for a Participant
+    const getParticipantAchievements = (partId: string) => {
+        const partMappings = mappings.filter(m => m.participant_id === partId);
+        const eventsList: Array<{
+            eventId: string;
+            eventName: string;
+            category: string;
+            roomCode: string;
+            avgScore: number;
+            grade: string;
+            rank: number;
+            prize: string;
+            points: number;
+        }> = [];
 
-    if (!authReady || loading) {
+        let firstPrizes = 0;
+        let secondPrizes = 0;
+        let thirdPrizes = 0;
+        let gradeA = 0;
+        let gradeB = 0;
+        let gradeC = 0;
+        let totalPoints = 0;
+
+        rooms.forEach(room => {
+            room.events.forEach(event => {
+                const map = partMappings.find(m => m.event_id === event.id);
+                if (!map) return;
+
+                const num = map.participant_number;
+                const ps = event.scores.filter(s => s.participant_number === num);
+                if (ps.length === 0) return;
+
+                const totalScore = ps.reduce((sum, s) => sum + s.score, 0);
+                const avgScore = totalScore / ps.length;
+
+                // Rank in this event
+                const nums = Array.from({ length: event.participant_count }, (_, i) => i + 1);
+                const ranked = nums.map((n) => {
+                    const scores = event.scores.filter((s) => s.participant_number === n);
+                    const tot = scores.reduce((sum, s) => sum + s.score, 0);
+                    return { n, tot, hasScores: scores.length > 0 };
+                }).filter(r => r.hasScores).sort((a, b) => b.tot - a.tot);
+
+                let rank = 1;
+                let prevTot = -1;
+                ranked.forEach((r, idx) => {
+                    if (idx > 0 && r.tot < prevTot) rank = idx + 1;
+                    prevTot = r.tot;
+                    if (r.n === num) return;
+                });
+
+                const myRankObj = ranked.find(r => r.n === num);
+                if (!myRankObj) return;
+
+                // Calculate rank and points for participant
+                let rankPos = 1;
+                for (let i = 0; i < ranked.length; i++) {
+                    if (ranked[i].tot > myRankObj.tot) rankPos++;
+                }
+
+                let rankPoints = 0;
+                let prize = 'Participation';
+                if (rankPos === 1) { rankPoints = 5; prize = '🥇 1st Prize'; firstPrizes++; }
+                else if (rankPos === 2) { rankPoints = 3; prize = '🥈 2nd Prize'; secondPrizes++; }
+                else if (rankPos === 3) { rankPoints = 1; prize = '🥉 3rd Prize'; thirdPrizes++; }
+
+                let grade = 'C';
+                let gradePoints = 1;
+                if (avgScore >= 80) { grade = 'A'; gradePoints = 5; gradeA++; }
+                else if (avgScore >= 60) { grade = 'B'; gradePoints = 3; gradeB++; }
+                else { gradeC++; }
+
+                const points = rankPoints + gradePoints;
+                totalPoints += points;
+
+                eventsList.push({
+                    eventId: event.id,
+                    eventName: event.event_name,
+                    category: event.category || 'General',
+                    roomCode: room.secret_code,
+                    avgScore: Number(avgScore.toFixed(1)),
+                    grade,
+                    rank: rankPos,
+                    prize,
+                    points,
+                });
+            });
+        });
+
+        return {
+            totalEvents: eventsList.length,
+            totalPrizes: firstPrizes + secondPrizes + thirdPrizes,
+            firstPrizes,
+            secondPrizes,
+            thirdPrizes,
+            gradeA,
+            gradeB,
+            gradeC,
+            totalPoints,
+            eventsList,
+        };
+    };
+
+    const selectRoom = (roomId: string) => {
+        setSelectedRoomId(roomId);
+        setMappingEventId(null);
+        setRoomTab('overview');
+    };
+
+    const copyCode = (code: string) => {
+        navigator.clipboard.writeText(code);
+        showToast(`Copied ${code} to clipboard!`, 'success');
+    };
+
+    const handleSignOut = async () => {
+        await supabase.auth.signOut();
+        router.replace('/');
+    };
+
+    const getParticipantCount = (teamId: string) => {
+        return participants.filter((p) => p.team_id === teamId).length;
+    };
+
+    if (!authReady || (loading && firstLoadRef.current)) {
         return (
             <div className="loading-screen">
-                <div className="spinner" />
-                <p>{!authReady ? 'Verifying access…' : 'Loading dashboard…'}</p>
+                <div className="spinner" /><p>Loading admin workspace…</p>
             </div>
         );
     }
 
-    return (
-        <div className="page-layout">
-            {/* Mobile overlay */}
-            <AnimatePresence>
-                {sidebarOpen && (
-                    <motion.div
-                        className="sidebar-overlay"
-                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                        onClick={() => setSidebarOpen(false)}
-                    />
-                )}
-            </AnimatePresence>
+    const selectedRoom = rooms.find((r) => r.id === selectedRoomId);
 
-            {/* ──── SIDEBAR ──── */}
-            <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
-                {/* Gradient header */}
-                <div className="sidebar-header">
-                    <div className="sidebar-logo-icon" style={{ background: 'white', padding: 4 }}>
+    const filteredParticipants = participants.filter((p) => {
+        const query = partSearch.toLowerCase();
+        const pTeam = teams.find(t => t.id === p.team_id);
+        return (
+            p.name.toLowerCase().includes(query) ||
+            p.chest_number.toLowerCase().includes(query) ||
+            (pTeam && pTeam.name.toLowerCase().includes(query))
+        );
+    });
+
+    return (
+        <div className="admin-page">
+            {/* Top Bar */}
+            <header className="admin-topbar">
+                <div className="flex items-c gap-3">
+                    <button
+                        className="btn btn-secondary btn-icon-only hide-lg"
+                        onClick={() => setSidebarOpen((v) => !v)}
+                        aria-label="Toggle Navigation"
+                    >
+                        ☰
+                    </button>
+                    <div style={{
+                        width: 34, height: 34, background: 'white', border: '1px solid var(--border)',
+                        borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        flexShrink: 0, padding: 4,
+                        boxShadow: 'var(--shadow-xs)',
+                    }}>
                         <img src="/logo/logo.png" alt="MiladOne Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
                     </div>
                     <div>
-                        <div className="sidebar-logo-text">Milad<span>One</span></div>
-                        {institutionName && (
-                            <div style={{ fontSize: '0.7rem', opacity: 0.85, marginTop: 2, fontWeight: 600, color: '#FFFFFF' }}>
-                                {institutionName}
-                            </div>
-                        )}
+                        <span style={{ fontWeight: 800, fontSize: '1rem' }}>
+                            Milad<span style={{ color: 'var(--primary)' }}>One</span>
+                        </span>
+                        <span className="badge badge-gray text-xs hide-sm" style={{ marginLeft: 8 }}>
+                            {institutionName || 'Admin'}
+                        </span>
                     </div>
                 </div>
 
-                <nav className="sidebar-nav">
-                    <div className="sidebar-section-title">Navigation</div>
-
-                    <button id="sidebar-overview" className={`sidebar-item ${!selectedRoomId && selectedView === 'overview' ? 'active' : ''}`}
-                        onClick={() => selectView('overview')}>
-                        <span style={{ fontSize: '1rem' }}>🏠</span>
-                        <span className="flex-1">Overview</span>
-                    </button>
-
-                    <button id="sidebar-teams" className={`sidebar-item ${!selectedRoomId && selectedView === 'teams' ? 'active' : ''}`}
-                        onClick={() => selectView('teams')}>
-                        <span style={{ fontSize: '1rem' }}>🛡️</span>
-                        <span className="flex-1">Manage Teams</span>
-                    </button>
-
-                    <button id="sidebar-participants" className={`sidebar-item ${!selectedRoomId && selectedView === 'participants' ? 'active' : ''}`}
-                        onClick={() => selectView('participants')}>
-                        <span style={{ fontSize: '1rem' }}>👤</span>
-                        <span className="flex-1">Manage Participants</span>
-                    </button>
-
-                    <button id="sidebar-championship" className={`sidebar-item ${!selectedRoomId && selectedView === 'championship' ? 'active' : ''}`}
-                        onClick={() => selectView('championship')}>
-                        <span style={{ fontSize: '1rem' }}>🛡️</span>
-                        <span className="flex-1">Team Standing</span>
-                    </button>
-
-                    <button id="sidebar-individual" className={`sidebar-item ${!selectedRoomId && selectedView === 'individual' ? 'active' : ''}`}
-                        onClick={() => selectView('individual')}>
-                        <span style={{ fontSize: '1rem' }}>🥇</span>
-                        <span className="flex-1">Individual Standing</span>
-                    </button>
-
-                    {rooms.length > 0 && (
-                        <>
-                            <div className="sidebar-section-title" style={{ marginTop: 16 }}>Rooms</div>
-                            {rooms.map((room) => {
-                                const full = room.judges.length >= room.judge_count_required;
-                                return (
-                                    <motion.button
-                                        key={room.id}
-                                        id={`sidebar-room-${room.id}`}
-                                        className={`sidebar-item ${selectedRoomId === room.id ? 'active' : ''}`}
-                                        onClick={() => selectRoom(room.id)}
-                                        whileHover={{ x: 2 }}
-                                        transition={{ duration: 0.15 }}
-                                    >
-                                        <span
-                                            className="sidebar-item-dot"
-                                            style={{ background: full ? 'var(--success)' : 'var(--warning)' }}
-                                        />
-                                        <span className="flex-1 truncate"
-                                            style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.85rem' }}>
-                                            {room.secret_code}
-                                        </span>
-                                        <span className="sidebar-count">
-                                            {room.judges.length}/{room.judge_count_required}
-                                        </span>
-                                    </motion.button>
-                                );
-                            })}
-                        </>
-                    )}
-                </nav>
-
-                {/* Footer */}
-                <div className="sidebar-footer">
-                    <div className="sidebar-user">
-                        <div className="sidebar-avatar">{initials}</div>
-                        <div className="sidebar-email">{userEmail}</div>
+                <div className="flex items-c gap-3">
+                    <div className="text-xs col-muted hide-md truncate" style={{ maxWidth: 200 }}>
+                        {userEmail}
                     </div>
-                    <motion.button id="btn-signout" onClick={handleSignOut}
-                        className="btn btn-secondary btn-sm btn-full" whileTap={{ scale: 0.97 }}>
+                    <motion.button
+                        id="btn-signout-admin"
+                        onClick={handleSignOut}
+                        className="btn btn-secondary btn-sm"
+                        whileTap={{ scale: 0.96 }}
+                    >
                         Sign Out
                     </motion.button>
                 </div>
-            </aside>
+            </header>
 
-            {/* ──── MAIN ──── */}
-            <main className="main-content" style={{ display: 'flex', flexDirection: 'column' }}>
-                {/* Header */}
-                <header className="main-header">
-                    <div className="flex items-c gap-3">
-                        <button className="hamburger" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
-                            <span /><span /><span />
+            {/* Layout Body */}
+            <div className="admin-layout">
+                {/* Mobile overlay */}
+                {sidebarOpen && (
+                    <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
+                )}
+
+                {/* Sidebar */}
+                <aside className={`admin-sidebar ${sidebarOpen ? 'open' : ''}`}>
+                    <div className="sidebar-section">
+                        <div className="sidebar-section-title">Navigation</div>
+                        <button
+                            className={`sidebar-item ${!selectedRoomId && selectedView === 'overview' ? 'active' : ''}`}
+                            onClick={() => { setSelectedRoomId(null); setSelectedView('overview'); setSidebarOpen(false); }}
+                        >
+                            <span>🏢 Room Dashboard</span>
                         </button>
-                        <div>
-                            <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.2 }}>
-                                {selectedRoom ? selectedRoom.secret_code : (institutionName || 'Admin Dashboard')}
-                            </h3>
-                            <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                                {selectedRoom ? `${selectedRoom.judges.length} judge(s) joined` : 'Manage rooms and monitor scoring'}
-                            </p>
+                        <button
+                            className={`sidebar-item ${!selectedRoomId && selectedView === 'teams' ? 'active' : ''}`}
+                            onClick={() => { setSelectedRoomId(null); setSelectedView('teams'); setSidebarOpen(false); }}
+                        >
+                            <span>🛡️ Manage Teams</span>
+                        </button>
+                        <button
+                            className={`sidebar-item ${!selectedRoomId && selectedView === 'participants' ? 'active' : ''}`}
+                            onClick={() => { setSelectedRoomId(null); setSelectedView('participants'); setSidebarOpen(false); }}
+                        >
+                            <span>👥 Participants Registry</span>
+                        </button>
+                        <button
+                            className={`sidebar-item ${!selectedRoomId && selectedView === 'achievements' ? 'active' : ''}`}
+                            onClick={() => { setSelectedRoomId(null); setSelectedView('achievements'); setSidebarOpen(false); }}
+                        >
+                            <span>🏅 Achievement History</span>
+                        </button>
+                        <button
+                            className={`sidebar-item ${!selectedRoomId && selectedView === 'championship' ? 'active' : ''}`}
+                            onClick={() => { setSelectedRoomId(null); setSelectedView('championship'); setSidebarOpen(false); }}
+                        >
+                            <span>🏆 Team Championship</span>
+                        </button>
+                        <button
+                            className={`sidebar-item ${!selectedRoomId && selectedView === 'individual' ? 'active' : ''}`}
+                            onClick={() => { setSelectedRoomId(null); setSelectedView('individual'); setSidebarOpen(false); }}
+                        >
+                            <span>🥇 Individual Leaderboard</span>
+                        </button>
+                    </div>
+
+                    <div className="sidebar-section" style={{ flex: 1 }}>
+                        <div className="sidebar-section-title flex just-b items-c">
+                            <span>Competition Rooms</span>
+                            <span className="badge badge-gray" style={{ fontSize: '0.65rem' }}>{rooms.length}</span>
                         </div>
-                    </div>
-                    <div className="flex items-c gap-3">
-                        <span className="live-badge">LIVE</span>
-                        <span className="badge badge-yellow hide-sm">Admin</span>
-                    </div>
-                </header>
-
-                {/* Body */}
-                <div className="main-body">
-                    <AnimatePresence mode="wait">
-                        {/* ── OVERVIEW ── */}
-                        {!selectedRoom && selectedView === 'overview' && (
-                            <motion.div key="overview" variants={stagger} initial="hidden" animate="show">
-                                {/* Stats */}
-                                <motion.div
-                                    className="grid-4"
-                                    variants={stagger}
-                                    style={{ marginBottom: 28 }}
-                                >
-                                    {[
-                                        { icon: '🏠', label: 'Total Rooms', value: rooms.length, color: '#EEF2FF', ico: '#6366F1' },
-                                        { icon: '⚖️', label: 'Total Judges', value: totalJudges, color: '#ECFDF5', ico: '#059669' },
-                                        { icon: '📋', label: 'Total Events', value: totalEvents, color: '#FFF7ED', ico: '#F97316' },
-                                        { icon: '✅', label: 'Score Entries', value: totalScores, color: '#F0FDF4', ico: '#10B981' },
-                                    ].map((s) => (
-                                        <motion.div key={s.label} className="stat-card" variants={fadeUp}>
-                                            <div className="stat-icon" style={{ background: s.color }}>
-                                                <span>{s.icon}</span>
+                        {rooms.length === 0 ? (
+                            <p className="text-xs col-muted p-2">No rooms created yet.</p>
+                        ) : (
+                            rooms.map((r) => {
+                                const isSel = r.id === selectedRoomId;
+                                return (
+                                    <button
+                                        key={r.id}
+                                        className={`sidebar-item ${isSel ? 'active' : ''}`}
+                                        onClick={() => { selectRoom(r.id); setSidebarOpen(false); }}
+                                    >
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                                <strong style={{ fontFamily: 'monospace', fontSize: '0.9rem' }}>{r.secret_code}</strong>
+                                                <span className="text-xs col-muted">{r.judges.length}/{r.judge_count_required} judges</span>
                                             </div>
-                                            <div className="stat-value">{s.value}</div>
-                                            <div className="stat-label">{s.label}</div>
-                                        </motion.div>
-                                    ))}
-                                </motion.div>
-
-                                {/* Create room */}
-                                <motion.div className="card" variants={fadeUp} style={{ marginBottom: 24 }}>
-                                    <div className="card-header">
-                                        <div>
-                                            <h3>Create New Room</h3>
-                                            <p className="text-xs col-muted mt-1">A unique 6-character code is auto-generated for judges to join.</p>
+                                            <div className="text-xs col-muted truncate">
+                                                {r.events.length} event{r.events.length !== 1 ? 's' : ''}
+                                            </div>
                                         </div>
+                                    </button>
+                                );
+                            })
+                        )}
+                    </div>
+                </aside>
+
+                {/* Main Content */}
+                <main className="admin-main">
+                    <div className="admin-content">
+                        {/* Breadcrumbs / Back button if inside a room */}
+                        {selectedRoomId && (
+                            <div className="flex items-c gap-3 mb-4">
+                                <button className="btn btn-secondary btn-sm" onClick={() => setSelectedRoomId(null)}>
+                                    ← Back to Dashboard
+                                </button>
+                                <span className="col-muted">/</span>
+                                <span style={{ fontWeight: 700 }}>
+                                    Room <strong style={{ fontFamily: 'monospace' }}>{selectedRoom?.secret_code}</strong>
+                                </span>
+                            </div>
+                        )}
+
+                        {/* ── ROOM DASHBOARD (MAIN OVERVIEW) ── */}
+                        {!selectedRoom && selectedView === 'overview' && (
+                            <motion.div key="overview" variants={stagger} initial="hidden" animate="show" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                                {/* Room Creation Card */}
+                                <motion.div className="card" variants={fadeUp}>
+                                    <div className="card-header">
+                                        <h3>➕ Create Competition Room</h3>
+                                        <p className="text-xs col-muted mt-1">Generate a 6-character room code for your judges.</p>
                                     </div>
                                     <div className="card-body">
-                                        <div className="flex items-c gap-4" style={{ flexWrap: 'wrap' }}>
-                                            <div className="form-group" style={{ flex: 1, minWidth: 180 }}>
-                                                <label className="form-label">Judges Required</label>
-                                                <select id="select-judge-count" className="select"
+                                        <form onSubmit={handleCreateRoom} className="flex gap-4 items-e flex-wrap">
+                                            <div className="form-group" style={{ minWidth: 160 }}>
+                                                <label className="form-label">Required Judges</label>
+                                                <select
+                                                    className="select"
                                                     value={newRoomJudgeCount}
-                                                    onChange={(e) => setNewRoomJudgeCount(Number(e.target.value) as 2 | 3)}>
+                                                    onChange={(e) => setNewRoomJudgeCount(Number(e.target.value) as 2 | 3)}
+                                                >
                                                     <option value={2}>2 Judges</option>
                                                     <option value={3}>3 Judges</option>
                                                 </select>
                                             </div>
-                                            <div className="form-group" style={{ flex: 1, minWidth: 180 }}>
+                                            <div className="form-group" style={{ minWidth: 180 }}>
                                                 <label className="form-label">Participant Code Style</label>
-                                                <select className="select"
+                                                <select
+                                                    className="select"
                                                     value={newRoomCodeType}
-                                                    onChange={(e) => setNewRoomCodeType(e.target.value as 'number' | 'letter')}>
+                                                    onChange={(e) => setNewRoomCodeType(e.target.value as 'number' | 'letter')}
+                                                >
                                                     <option value="number">Numbers (1, 2, 3...)</option>
                                                     <option value="letter">Letters (A, B, C...)</option>
                                                 </select>
                                             </div>
-                                            <motion.button
-                                                id="btn-create-room"
-                                                onClick={handleCreateRoom}
-                                                disabled={creating}
+                                            <button
+                                                type="submit"
                                                 className="btn btn-primary"
-                                                style={{ alignSelf: 'flex-end', height: 40 }}
-                                                whileHover={{ scale: 1.02 }}
-                                                whileTap={{ scale: 0.97 }}
+                                                disabled={creating}
+                                                style={{ height: 42 }}
                                             >
-                                                {creating
-                                                    ? <><div className="spinner spinner-sm spinner-white" /> Creating…</>
-                                                    : '+ Create Room'}
-                                            </motion.button>
-                                        </div>
+                                                {creating ? 'Creating…' : 'Generate Room Code'}
+                                            </button>
+                                        </form>
                                     </div>
                                 </motion.div>
 
-                                {/* Rooms table */}
+                                {/* Active Rooms Table Card */}
                                 <motion.div className="card" variants={fadeUp}>
-                                    <div className="card-header">
-                                        <h3>All Rooms</h3>
-                                        <span className="badge badge-gray">{rooms.length}</span>
+                                    <div className="card-header flex just-b items-c">
+                                        <div>
+                                            <h3>Active Competition Rooms</h3>
+                                            <p className="text-xs col-muted mt-1">Rooms active for judges to join and score.</p>
+                                        </div>
+                                        <span className="badge badge-gray">{rooms.length} Rooms</span>
                                     </div>
                                     <div className="table-wrap">
                                         <table className="table">
                                             <thead>
                                                 <tr>
-                                                    <th>Code</th>
-                                                    <th>Judges</th>
+                                                    <th>Room Code</th>
+                                                    <th>Judges Joined</th>
                                                     <th>Events</th>
-                                                    <th>Scores</th>
-                                                    <th>Created</th>
-                                                    <th></th>
+                                                    <th>Total Scores</th>
+                                                    <th>Created Date</th>
+                                                    <th style={{ width: 120 }}>Actions</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 {rooms.length === 0 ? (
-                                                    <tr><td colSpan={6}>
-                                                        <div className="empty-state">
-                                                            <div className="empty-state-icon">🏠</div>
-                                                            <h4>No rooms yet</h4>
-                                                            <p>Create your first room above to get started.</p>
-                                                        </div>
-                                                    </td></tr>
-                                                ) : rooms.map((room) => (
-                                                    <tr key={room.id}>
-                                                        <td>
-                                                            <button className="room-code" onClick={() => copyCode(room.secret_code)} title="Click to copy">
-                                                                {room.secret_code} <span style={{ fontSize: 10 }}>⎘</span>
-                                                            </button>
-                                                        </td>
-                                                        <td>
-                                                            <strong>{room.judges.length}</strong>
-                                                            <span className="col-muted"> / {room.judge_count_required}</span>
-                                                            {room.judges.length >= room.judge_count_required &&
-                                                                <span className="badge badge-green" style={{ marginLeft: 6 }}>Full</span>}
-                                                        </td>
-                                                        <td><strong>{room.events.length}</strong></td>
-                                                        <td><strong>{room.events.reduce((s, e) => s + e.scores.length, 0)}</strong></td>
-                                                        <td className="col-muted">{new Date(room.created_at).toLocaleDateString()}</td>
-                                                        <td>
-                                                            <div className="flex gap-2">
-                                                                <button className="btn btn-ghost btn-sm"
-                                                                    onClick={() => selectRoom(room.id)}>View →</button>
-                                                                <button className="btn btn-ghost btn-sm text-danger"
-                                                                    onClick={() => setConfirmDeleteRoom(room.id)}
-                                                                    title="Delete Room">
-                                                                    🗑️
-                                                                </button>
+                                                    <tr>
+                                                        <td colSpan={6}>
+                                                            <div className="empty-state">
+                                                                <p>No active rooms. Create your first competition room above.</p>
                                                             </div>
                                                         </td>
                                                     </tr>
-                                                ))}
+                                                ) : (
+                                                    rooms.map((room) => (
+                                                        <tr key={room.id}>
+                                                            <td>
+                                                                <button className="room-code" onClick={() => copyCode(room.secret_code)} title="Click to copy">
+                                                                    {room.secret_code} <span style={{ fontSize: 10 }}>⎘</span>
+                                                                </button>
+                                                            </td>
+                                                            <td>
+                                                                <strong>{room.judges.length}</strong>
+                                                                <span className="col-muted"> / {room.judge_count_required}</span>
+                                                                {room.judges.length >= room.judge_count_required &&
+                                                                    <span className="badge badge-green" style={{ marginLeft: 6 }}>Full</span>}
+                                                            </td>
+                                                            <td><strong>{room.events.length}</strong></td>
+                                                            <td><strong>{room.events.reduce((s, e) => s + e.scores.length, 0)}</strong></td>
+                                                            <td className="col-muted">{new Date(room.created_at).toLocaleDateString()}</td>
+                                                            <td>
+                                                                <div className="flex gap-2">
+                                                                    <button className="btn btn-ghost btn-sm"
+                                                                        onClick={() => selectRoom(room.id)}>View →</button>
+                                                                    <button className="btn btn-ghost btn-sm text-danger"
+                                                                        onClick={() => setConfirmDeleteRoom(room.id)}
+                                                                        title="Delete Room">
+                                                                        🗑️
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                        </tr>
+                                                    ))
+                                                )}
                                             </tbody>
                                         </table>
                                     </div>
@@ -1014,7 +1291,6 @@ export default function AdminPage() {
                         {!selectedRoom && selectedView === 'teams' && (
                             <motion.div key="teams" variants={stagger} initial="hidden" animate="show" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 24, alignItems: 'start' }}>
-                                    {/* Create Team Card */}
                                     <motion.div className="card" variants={fadeUp}>
                                         <div className="card-header">
                                             <h3>🛡️ Create New Team</h3>
@@ -1040,7 +1316,6 @@ export default function AdminPage() {
                                         </div>
                                     </motion.div>
 
-                                    {/* Teams Directory Card */}
                                     <motion.div className="card" variants={fadeUp}>
                                         <div className="card-header">
                                             <h3>🛡️ Registered Teams</h3>
@@ -1059,9 +1334,7 @@ export default function AdminPage() {
                                                     {teams.length === 0 ? (
                                                         <tr>
                                                             <td colSpan={3}>
-                                                                <div className="empty-state">
-                                                                    <p>No teams created yet.</p>
-                                                                </div>
+                                                                <div className="empty-state"><p>No teams created yet.</p></div>
                                                             </td>
                                                         </tr>
                                                     ) : (
@@ -1118,15 +1391,15 @@ export default function AdminPage() {
                             </motion.div>
                         )}
 
-                        {/* ── PARTICIPANTS MANAGEMENT ── */}
+                        {/* ── PARTICIPANTS REGISTRY ── */}
                         {!selectedRoom && selectedView === 'participants' && (
                             <motion.div key="participants" variants={stagger} initial="hidden" animate="show" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 24, alignItems: 'start' }}>
-                                    {/* Create Participant Card */}
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 24, alignItems: 'start' }}>
+                                    {/* Single Participant Creation Form */}
                                     <motion.div className="card" variants={fadeUp}>
                                         <div className="card-header">
-                                            <h3>👤 Add New Participant</h3>
-                                            <p className="text-xs col-muted mt-1">Register a competitor with a permanent chest number.</p>
+                                            <h3>👤 Register Participant</h3>
+                                            <p className="text-xs col-muted mt-1">Chest numbers are automatically assigned uniquely.</p>
                                         </div>
                                         <div className="card-body">
                                             <form onSubmit={handleCreateParticipant}>
@@ -1135,37 +1408,108 @@ export default function AdminPage() {
                                                     <input
                                                         type="text"
                                                         className="input"
-                                                        placeholder="e.g. John Doe"
+                                                        placeholder="e.g. Muhammed Ali"
                                                         value={newPartName}
                                                         onChange={(e) => setNewPartName(e.target.value)}
                                                         required
                                                     />
                                                 </div>
+
                                                 <div className="form-group mb-3">
-                                                    <label className="form-label">Chest Number</label>
-                                                    <input
-                                                        type="text"
-                                                        className="input"
-                                                        placeholder="e.g. C101"
-                                                        style={{ textTransform: 'uppercase' }}
-                                                        value={newPartChest}
-                                                        onChange={(e) => setNewPartChest(e.target.value)}
-                                                        required
-                                                    />
+                                                    <label className="form-label">Category</label>
+                                                    <select
+                                                        className="select"
+                                                        value={newPartCategory}
+                                                        onChange={(e) => setNewPartCategory(e.target.value)}
+                                                    >
+                                                        <option value="Kiddies">Kiddies</option>
+                                                        <option value="Sub Junior">Sub Junior</option>
+                                                        <option value="Junior">Junior</option>
+                                                        <option value="Senior">Senior</option>
+                                                        <option value="Super Senior">Super Senior</option>
+                                                        <option value="General">General</option>
+                                                    </select>
                                                 </div>
-                                                <div className="form-group mb-4">
+
+                                                <div className="form-group mb-3">
                                                     <label className="form-label">Assign Team</label>
                                                     <select
                                                         className="select"
                                                         value={newPartTeamId}
                                                         onChange={(e) => setNewPartTeamId(e.target.value)}
                                                     >
-                                                        <option value="">No Team</option>
-                                                        {teams.map((t) => (
-                                                            <option key={t.id} value={t.id}>{t.name}</option>
+                                                        <option value="">No Team (Independent)</option>
+                                                        {teams.map((t, idx) => (
+                                                            <option key={t.id} value={t.id}>
+                                                                {t.name} (Series {(idx + 1) * 100}s)
+                                                            </option>
                                                         ))}
                                                     </select>
                                                 </div>
+
+                                                <div className="mb-4" style={{
+                                                    background: 'var(--bg-muted)',
+                                                    padding: '16px 16px',
+                                                    borderRadius: 'var(--r-md)',
+                                                    border: '1px solid var(--border)',
+                                                    display: 'flex',
+                                                    flexDirection: 'column',
+                                                    gap: 8
+                                                }}>
+                                                    <div className="flex just-b items-c">
+                                                        <label htmlFor="auto-chest-toggle" className="form-label mb-0" style={{ cursor: 'pointer', margin: 0, fontWeight: 700, fontSize: '0.92rem', color: 'var(--fg-main)' }}>
+                                                            ⚡ Auto Generate Chest Number
+                                                        </label>
+                                                        <input
+                                                            id="auto-chest-toggle"
+                                                            type="checkbox"
+                                                            checked={autoGenerateChest}
+                                                            onChange={(e) => setAutoGenerateChest(e.target.checked)}
+                                                            style={{ width: 20, height: 20, cursor: 'pointer', accentColor: 'var(--primary)' }}
+                                                        />
+                                                    </div>
+                                                    <p className="text-xs col-muted" style={{ margin: 0, lineHeight: 1.45 }}>
+                                                        {autoGenerateChest 
+                                                            ? 'Chest number is automatically calculated based on selected team series.'
+                                                            : 'Manually specify a custom chest number below.'}
+                                                    </p>
+                                                </div>
+
+                                                {autoGenerateChest ? (
+                                                    <div className="form-group mb-4">
+                                                        <label className="form-label mb-1.5">Assigned Chest Number</label>
+                                                        <div style={{
+                                                            background: '#EEF2FF',
+                                                            padding: '12px 16px',
+                                                            borderRadius: 'var(--r-md)',
+                                                            border: '1.5px solid #C7D2FE',
+                                                            display: 'flex',
+                                                            alignItems: 'center',
+                                                            justifyContent: 'space-between'
+                                                        }}>
+                                                            <span style={{ fontSize: '0.88rem', fontWeight: 600, color: '#3730A3' }}>
+                                                                Series Next Value:
+                                                            </span>
+                                                            <span className="room-code" style={{ fontSize: '1rem', padding: '4px 12px', background: 'white', borderRadius: 'var(--r-sm)', border: '1px solid #A5B4FC' }}>
+                                                                {generateTeamChestNumber(newPartTeamId, teams, participants)}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="form-group mb-4">
+                                                        <label className="form-label">Chest Number (Manual)</label>
+                                                        <input
+                                                            type="text"
+                                                            className="input"
+                                                            placeholder="e.g. 105 or 203"
+                                                            value={manualChestInput}
+                                                            onChange={(e) => setManualChestInput(e.target.value)}
+                                                            style={{ textTransform: 'uppercase' }}
+                                                            required={!autoGenerateChest}
+                                                        />
+                                                    </div>
+                                                )}
+
                                                 <button type="submit" className="btn btn-primary btn-full">
                                                     + Add Participant
                                                 </button>
@@ -1173,17 +1517,17 @@ export default function AdminPage() {
                                         </div>
                                     </motion.div>
 
-                                    {/* Bulk Import Card */}
+                                    {/* Bulk Import Form */}
                                     <motion.div className="card" variants={fadeUp}>
                                         <div className="card-header">
-                                            <h3>📋 Bulk Import Participants</h3>
-                                            <p className="text-xs col-muted mt-1">Paste CSV/TSV data below. Format: <code>Name, ChestNumber, TeamName</code> (one per line).</p>
+                                            <h3>⚡ Bulk Import Participants</h3>
+                                            <p className="text-xs col-muted mt-1">Format: <code>Participant Name, Team Name</code> (one per line). Chest numbers will be automatically generated.</p>
                                         </div>
-                                        <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                        <div className="card-body">
                                             <textarea
-                                                className="input"
-                                                style={{ fontFamily: 'monospace', fontSize: '0.8rem', minHeight: 140, resize: 'vertical' }}
-                                                placeholder="John Doe, C101, Red House&#10;Jane Smith, C102, Blue House&#10;Alice Johnson, C103, Red House"
+                                                className="input mb-3"
+                                                style={{ height: 130, fontFamily: 'monospace', fontSize: '0.85rem' }}
+                                                placeholder={`Ahmed Ali, Red House\nFathima Noor, Blue Panthers\nZayd Omar`}
                                                 value={bulkImportText}
                                                 onChange={(e) => setBulkImportText(e.target.value)}
                                             />
@@ -1192,24 +1536,24 @@ export default function AdminPage() {
                                                 onClick={handleBulkImport}
                                                 disabled={importing || !bulkImportText.trim()}
                                             >
-                                                {importing ? <div className="spinner spinner-sm spinner-white" /> : 'Process Import'}
+                                                {importing ? 'Importing…' : 'Import Participants'}
                                             </button>
                                         </div>
                                     </motion.div>
                                 </div>
 
-                                {/* Participants Directory Card */}
+                                {/* Participant Directory Table */}
                                 <motion.div className="card" variants={fadeUp}>
                                     <div className="card-header flex just-b items-c" style={{ flexWrap: 'wrap', gap: 12 }}>
                                         <div>
-                                            <h3>👤 Participant Registry</h3>
-                                            <span className="badge badge-gray">{participants.length}</span>
+                                            <h3>Participant Registry</h3>
+                                            <p className="text-xs col-muted mt-1">Manage participants and click history to view achievements.</p>
                                         </div>
-                                        <div className="form-group" style={{ margin: 0, minWidth: 200 }}>
+                                        <div className="flex gap-3 items-c" style={{ flex: 1, maxWidth: 300 }}>
                                             <input
                                                 type="text"
                                                 className="input input-sm"
-                                                placeholder="🔍 Search name or chest number..."
+                                                placeholder="Search name, chest #, team…"
                                                 value={partSearch}
                                                 onChange={(e) => setPartSearch(e.target.value)}
                                             />
@@ -1219,46 +1563,52 @@ export default function AdminPage() {
                                         <table className="table">
                                             <thead>
                                                 <tr>
-                                                    <th style={{ width: 150 }}>Chest Number</th>
-                                                    <th>Full Name</th>
+                                                    <th style={{ width: 110 }}>Chest No.</th>
+                                                    <th>Name</th>
+                                                    <th>Category</th>
                                                     <th>Team</th>
-                                                    <th style={{ width: 120 }}>Actions</th>
+                                                    <th>Total Prizes Won</th>
+                                                    <th style={{ width: 140 }}>Actions</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                {(() => {
-                                                    const filtered = participants.filter((p) => {
-                                                        const q = partSearch.toLowerCase();
-                                                        return (
-                                                            p.name.toLowerCase().includes(q) ||
-                                                            p.chest_number.toLowerCase().includes(q)
-                                                        );
-                                                    });
-                                                    if (filtered.length === 0) {
-                                                        return (
-                                                            <tr>
-                                                                <td colSpan={4}>
-                                                                    <div className="empty-state">
-                                                                        <p>No matching participants found.</p>
-                                                                    </div>
-                                                                </td>
-                                                            </tr>
-                                                        );
-                                                    }
-                                                    return filtered.map((part) => {
+                                                {filteredParticipants.length === 0 ? (
+                                                    <tr>
+                                                        <td colSpan={6}>
+                                                            <div className="empty-state"><p>No participants registered yet.</p></div>
+                                                        </td>
+                                                    </tr>
+                                                ) : (
+                                                    filteredParticipants.map((part) => {
                                                         const isEditing = editingPartId === part.id;
                                                         const pTeam = teams.find((t) => t.id === (isEditing ? editingPartTeamId : part.team_id));
+                                                        const ach = getParticipantAchievements(part.id);
+
                                                         return (
                                                             <tr key={part.id}>
                                                                 <td>
                                                                     {isEditing ? (
-                                                                        <input
-                                                                            type="text"
-                                                                            className="input input-sm"
-                                                                            style={{ textTransform: 'uppercase' }}
-                                                                            value={editingPartChest}
-                                                                            onChange={(e) => setEditingPartChest(e.target.value)}
-                                                                        />
+                                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                                            <input
+                                                                                type="text"
+                                                                                className="input input-sm"
+                                                                                style={{ textTransform: 'uppercase', width: 90 }}
+                                                                                value={editingPartChest}
+                                                                                onChange={(e) => setEditingPartChest(e.target.value)}
+                                                                            />
+                                                                            <button
+                                                                                type="button"
+                                                                                className="btn btn-ghost btn-sm"
+                                                                                style={{ padding: '2px 4px', fontSize: '0.68rem', color: 'var(--primary)' }}
+                                                                                onClick={() => {
+                                                                                    const autoVal = generateTeamChestNumber(editingPartTeamId, teams, participants, 0, part.id);
+                                                                                    setEditingPartChest(autoVal);
+                                                                                }}
+                                                                                title="Auto-calculate next available chest number for selected team"
+                                                                            >
+                                                                                ⚡ Auto Team #
+                                                                            </button>
+                                                                        </div>
                                                                     ) : (
                                                                         <span className="room-code" style={{ padding: '4px 8px', fontSize: '0.8rem' }}>
                                                                             {part.chest_number}
@@ -1274,7 +1624,33 @@ export default function AdminPage() {
                                                                             onChange={(e) => setEditingPartName(e.target.value)}
                                                                         />
                                                                     ) : (
-                                                                        <strong>{part.name}</strong>
+                                                                        <strong
+                                                                            style={{ cursor: 'pointer', color: 'var(--primary)' }}
+                                                                            onClick={() => setViewingHistoryParticipant(part)}
+                                                                            title="Click to view achievement history"
+                                                                        >
+                                                                            {part.name}
+                                                                        </strong>
+                                                                    )}
+                                                                </td>
+                                                                <td>
+                                                                    {isEditing ? (
+                                                                        <select
+                                                                            className="select select-sm"
+                                                                            value={editingPartCategory}
+                                                                            onChange={(e) => setEditingPartCategory(e.target.value)}
+                                                                        >
+                                                                            <option value="Kiddies">Kiddies</option>
+                                                                            <option value="Sub Junior">Sub Junior</option>
+                                                                            <option value="Junior">Junior</option>
+                                                                            <option value="Senior">Senior</option>
+                                                                            <option value="Super Senior">Super Senior</option>
+                                                                            <option value="General">General</option>
+                                                                        </select>
+                                                                    ) : (
+                                                                        <span className="badge badge-blue">
+                                                                            {part.category || 'Senior'}
+                                                                        </span>
                                                                     )}
                                                                 </td>
                                                                 <td>
@@ -1296,7 +1672,22 @@ export default function AdminPage() {
                                                                     )}
                                                                 </td>
                                                                 <td>
+                                                                    <div className="flex gap-2 items-c text-xs">
+                                                                        {ach.firstPrizes > 0 && <span className="badge badge-yellow">🥇 {ach.firstPrizes}</span>}
+                                                                        {ach.secondPrizes > 0 && <span className="badge badge-gray">🥈 {ach.secondPrizes}</span>}
+                                                                        {ach.thirdPrizes > 0 && <span className="badge badge-blue">🥉 {ach.thirdPrizes}</span>}
+                                                                        {ach.totalPrizes === 0 && <span className="col-muted">—</span>}
+                                                                    </div>
+                                                                </td>
+                                                                <td>
                                                                     <div className="flex gap-2">
+                                                                        <button
+                                                                            className="btn btn-ghost btn-sm"
+                                                                            onClick={() => setViewingHistoryParticipant(part)}
+                                                                            title="View History"
+                                                                        >
+                                                                            🏆 History
+                                                                        </button>
                                                                         {isEditing ? (
                                                                             <>
                                                                                 <button className="btn btn-ghost btn-sm text-success" onClick={() => handleSavePartEdit(part.id)}>✓</button>
@@ -1309,6 +1700,7 @@ export default function AdminPage() {
                                                                                     setEditingPartName(part.name);
                                                                                     setEditingPartChest(part.chest_number);
                                                                                     setEditingPartTeamId(part.team_id || '');
+                                                                                    setEditingPartCategory(part.category || 'Senior');
                                                                                 }}>✏️</button>
                                                                                 <button className="btn btn-ghost btn-sm text-danger" onClick={() => handleDeleteParticipant(part.id)}>🗑️</button>
                                                                             </>
@@ -1317,12 +1709,81 @@ export default function AdminPage() {
                                                                 </td>
                                                             </tr>
                                                         );
-                                                    });
-                                                })()}
+                                                    })
+                                                )}
                                             </tbody>
                                         </table>
                                     </div>
                                 </motion.div>
+                            </motion.div>
+                        )}
+
+                        {/* ── ACHIEVEMENT HISTORY VIEW ── */}
+                        {!selectedRoom && selectedView === 'achievements' && (
+                            <motion.div key="achievements" variants={stagger} initial="hidden" animate="show" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                                <div className="card">
+                                    <div className="card-header flex just-b items-c" style={{ flexWrap: 'wrap', gap: 12 }}>
+                                        <div>
+                                            <h3>🏅 Participant Achievement Directory</h3>
+                                            <p className="text-xs col-muted mt-1">Select a participant to view their full competition history, grades, and medals won.</p>
+                                        </div>
+                                        <input
+                                            type="text"
+                                            className="input input-sm"
+                                            style={{ maxWidth: 260 }}
+                                            placeholder="Filter participant name..."
+                                            value={achievementSearch}
+                                            onChange={(e) => setAchievementSearch(e.target.value)}
+                                        />
+                                    </div>
+                                    <div className="table-wrap">
+                                        <table className="table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Participant</th>
+                                                    <th>Chest #</th>
+                                                    <th>Team</th>
+                                                    <th>Total Events</th>
+                                                    <th>Medals (1st / 2nd / 3rd)</th>
+                                                    <th>Total Points</th>
+                                                    <th style={{ width: 120 }}>Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {participants
+                                                    .filter(p => p.name.toLowerCase().includes(achievementSearch.toLowerCase()) || p.chest_number.toLowerCase().includes(achievementSearch.toLowerCase()))
+                                                    .map(p => {
+                                                        const ach = getParticipantAchievements(p.id);
+                                                        const team = teams.find(t => t.id === p.team_id);
+                                                        return (
+                                                            <tr key={p.id}>
+                                                                <td><strong>{p.name}</strong></td>
+                                                                <td><span className="room-code">{p.chest_number}</span></td>
+                                                                <td>{team ? <span className="badge badge-yellow">{team.name}</span> : <span className="col-muted">No Team</span>}</td>
+                                                                <td><strong>{ach.totalEvents}</strong></td>
+                                                                <td>
+                                                                    <div className="flex gap-2 items-c text-xs">
+                                                                        <span className="badge badge-yellow">🥇 {ach.firstPrizes}</span>
+                                                                        <span className="badge badge-gray">🥈 {ach.secondPrizes}</span>
+                                                                        <span className="badge badge-blue">🥉 {ach.thirdPrizes}</span>
+                                                                    </div>
+                                                                </td>
+                                                                <td><strong style={{ color: 'var(--primary)', fontSize: '1.05rem' }}>{ach.totalPoints} pts</strong></td>
+                                                                <td>
+                                                                    <button
+                                                                        className="btn btn-primary btn-sm"
+                                                                        onClick={() => setViewingHistoryParticipant(p)}
+                                                                    >
+                                                                        View History 🏆
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </motion.div>
                         )}
 
@@ -1331,21 +1792,12 @@ export default function AdminPage() {
                             const categories = getAvailableCategories();
                             const standings = calculateTeamStandings(championshipCategory);
                             const championTeam = standings.length > 0 && standings[0].points > 0 ? standings[0] : null;
-                            
+
                             return (
                                 <motion.div key="championship" variants={stagger} initial="hidden" animate="show" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                                    {/* Category Select Buttons */}
-                                    <div style={{
-                                        display: 'flex',
-                                        gap: 8,
-                                        overflowX: 'auto',
-                                        paddingBottom: 8,
-                                        scrollbarWidth: 'none',
-                                        msOverflowStyle: 'none',
-                                    }} className="category-scrollbar">
+                                    <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
                                         <button
                                             className={`btn btn-sm ${championshipCategory === 'overall' ? 'btn-primary' : 'btn-secondary'}`}
-                                            style={{ whiteSpace: 'nowrap' }}
                                             onClick={() => setChampionshipCategory('overall')}
                                         >
                                             Overall Standing
@@ -1361,10 +1813,9 @@ export default function AdminPage() {
                                             </button>
                                         ))}
                                     </div>
- 
-                                    {/* Champion Spotlight Banner */}
+
                                     {championTeam && (
-                                        <motion.div 
+                                        <motion.div
                                             initial={{ opacity: 0, y: -10 }}
                                             animate={{ opacity: 1, y: 0 }}
                                             style={{
@@ -1388,8 +1839,7 @@ export default function AdminPage() {
                                             </div>
                                         </motion.div>
                                     )}
- 
-                                    {/* Standings Table Card */}
+
                                     <motion.div className="card" variants={fadeUp}>
                                         <div className="card-header flex just-b items-c">
                                             <h3>
@@ -1417,7 +1867,6 @@ export default function AdminPage() {
                                                                 <td>
                                                                     <div>
                                                                         <strong style={{ fontSize: '1.05rem', color: 'var(--text-primary)' }}>{t.name}</strong>
-                                                                        {/* Category Breakdown (only visible on Overall view) */}
                                                                         {championshipCategory === 'overall' && (
                                                                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
                                                                                 {categories.map(cat => {
@@ -1449,17 +1898,6 @@ export default function AdminPage() {
                                                             </tr>
                                                         );
                                                     })}
-                                                    {teams.length === 0 && (
-                                                        <tr>
-                                                            <td colSpan={3}>
-                                                                <div className="empty-state">
-                                                                    <div className="empty-state-icon">🏆</div>
-                                                                    <h4>No teams registered</h4>
-                                                                    <p>Go to "Manage Teams" to add teams first.</p>
-                                                                </div>
-                                                            </td>
-                                                        </tr>
-                                                    )}
                                                 </tbody>
                                             </table>
                                         </div>
@@ -1473,21 +1911,12 @@ export default function AdminPage() {
                             const categories = getAvailableCategories();
                             const standings = calculateIndividualStandings(individualCategory);
                             const champion = standings.length > 0 && standings[0].points > 0 ? standings[0] : null;
-                            
+
                             return (
                                 <motion.div key="individual" variants={stagger} initial="hidden" animate="show" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                                    {/* Category Select Buttons */}
-                                    <div style={{
-                                        display: 'flex',
-                                        gap: 8,
-                                        overflowX: 'auto',
-                                        paddingBottom: 8,
-                                        scrollbarWidth: 'none',
-                                        msOverflowStyle: 'none',
-                                    }} className="category-scrollbar">
+                                    <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
                                         <button
                                             className={`btn btn-sm ${individualCategory === 'overall' ? 'btn-primary' : 'btn-secondary'}`}
-                                            style={{ whiteSpace: 'nowrap' }}
                                             onClick={() => setIndividualCategory('overall')}
                                         >
                                             Overall Individual
@@ -1503,10 +1932,9 @@ export default function AdminPage() {
                                             </button>
                                         ))}
                                     </div>
- 
-                                    {/* Champion Spotlight Banner */}
+
                                     {champion && (
-                                        <motion.div 
+                                        <motion.div
                                             initial={{ opacity: 0, y: -10 }}
                                             animate={{ opacity: 1, y: 0 }}
                                             style={{
@@ -1533,8 +1961,7 @@ export default function AdminPage() {
                                             </div>
                                         </motion.div>
                                     )}
- 
-                                    {/* Individual Standings Table */}
+
                                     <motion.div className="card" variants={fadeUp}>
                                         <div className="card-header flex just-b items-c">
                                             <h3>
@@ -1564,28 +1991,6 @@ export default function AdminPage() {
                                                                 <td>
                                                                     <div>
                                                                         <strong style={{ fontSize: '1.02rem', color: 'var(--text-primary)' }}>{s.name}</strong>
-                                                                        {/* Category Breakdown (only visible on Overall view) */}
-                                                                        {individualCategory === 'overall' && (
-                                                                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
-                                                                                {categories.map(cat => {
-                                                                                    const pts = s.categoryPoints[cat] || 0;
-                                                                                    if (pts === 0) return null;
-                                                                                    return (
-                                                                                        <span key={cat} style={{
-                                                                                            fontSize: '0.68rem',
-                                                                                            background: 'var(--bg-muted)',
-                                                                                            color: 'var(--text-secondary)',
-                                                                                            padding: '2px 6px',
-                                                                                            borderRadius: '4px',
-                                                                                            border: '1px solid var(--border)',
-                                                                                            fontWeight: 600
-                                                                                        }}>
-                                                                                            {cat}: {pts} pts
-                                                                                        </span>
-                                                                                    );
-                                                                                })}
-                                                                            </div>
-                                                                        )}
                                                                     </div>
                                                                 </td>
                                                                 <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{s.chestNumber || '—'}</td>
@@ -1598,17 +2003,6 @@ export default function AdminPage() {
                                                             </tr>
                                                         );
                                                     })}
-                                                    {standings.filter(s => s.points > 0).length === 0 && (
-                                                        <tr>
-                                                            <td colSpan={5}>
-                                                                <div className="empty-state">
-                                                                    <div className="empty-state-icon">🥇</div>
-                                                                    <h4>No individual scores yet</h4>
-                                                                    <p>Points will appear here once participants are mapped and scored in events.</p>
-                                                                </div>
-                                                            </td>
-                                                        </tr>
-                                                    )}
                                                 </tbody>
                                             </table>
                                         </div>
@@ -1617,14 +2011,13 @@ export default function AdminPage() {
                             );
                         })()}
 
-                        {/* ── ROOM DETAIL ── */}
+                        {/* ── ROOM DETAIL VIEW ── */}
                         {selectedRoom && (
                             <motion.div key={selectedRoom.id}
                                 initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }}
                                 exit={{ opacity: 0, x: -16 }}
                                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
                             >
-                                {/* Room header card */}
                                 <div style={{
                                     display: 'grid',
                                     gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
@@ -1649,7 +2042,6 @@ export default function AdminPage() {
                                     ))}
                                 </div>
 
-                                {/* Tab bar */}
                                 <div style={{
                                     display: 'flex', gap: 4, background: 'var(--bg-muted)',
                                     borderRadius: 'var(--r-sm)', padding: 4, marginBottom: 20,
@@ -1665,7 +2057,6 @@ export default function AdminPage() {
                                 </div>
 
                                 <AnimatePresence mode="wait">
-                                    {/* Overview tab */}
                                     {roomTab === 'overview' && (
                                         <motion.div key="overview-tab"
                                             initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
@@ -1673,7 +2064,7 @@ export default function AdminPage() {
                                             transition={{ duration: 0.25 }}
                                             style={{ display: 'flex', flexDirection: 'column', gap: 16 }}
                                         >
-                                            {/* Judges */}
+                                            {/* Judges List */}
                                             <div className="card">
                                                 <div className="card-header">
                                                     <h3>Judges in Room</h3>
@@ -1711,20 +2102,31 @@ export default function AdminPage() {
                                                 )}
                                             </div>
 
-                                            {/* Events */}
+                                            {/* Events Management & Creation */}
                                             <div className="card">
-                                                <div className="card-header">
-                                                    <h3>Events</h3>
-                                                    <span className="badge badge-gray">{selectedRoom.events.length}</span>
+                                                <div className="card-header flex just-b items-c">
+                                                    <div>
+                                                        <h3>Events Management</h3>
+                                                        <p className="text-xs col-muted mt-1">Create events and select participating students for this room.</p>
+                                                    </div>
+                                                    <button
+                                                        className="btn btn-primary btn-sm"
+                                                        onClick={() => {
+                                                            setShowCreateEventModal(true);
+                                                            setEventCategoryFilter(newEventCategory);
+                                                        }}
+                                                    >
+                                                        + Create Event
+                                                    </button>
                                                 </div>
                                                 {selectedRoom.events.length === 0 ? (
                                                     <div className="card-body">
                                                         <div className="empty-state" style={{ padding: '28px 0' }}>
-                                                            <p>No events yet. Judges create events after joining.</p>
+                                                            <p>No events created yet. Click "+ Create Event" above to create an event.</p>
                                                         </div>
                                                     </div>
                                                 ) : (
-                                                <div className="table-wrap">
+                                                    <div className="table-wrap">
                                                         <table className="table">
                                                             <thead><tr><th>Event</th><th>Participants</th><th>Score Entries</th><th>Created By</th><th>Date</th><th>Actions</th></tr></thead>
                                                             <tbody>
@@ -1734,7 +2136,7 @@ export default function AdminPage() {
                                                                             <strong style={{ display: 'block' }}>{ev.event_name}</strong>
                                                                             {ev.category && <span className="badge badge-gray" style={{ marginTop: 4, display: 'inline-block', padding: '2px 6px', fontSize: '0.7rem' }}>{ev.category}</span>}
                                                                         </td>
-                                                                        <td>{ev.participant_count}</td>
+                                                                        <td><strong>{ev.participant_count}</strong></td>
                                                                         <td>
                                                                             {ev.scores.length}
                                                                             {ev.scores.length > 0 && <span className="badge badge-green" style={{ marginLeft: 6 }}>Live</span>}
@@ -1742,12 +2144,22 @@ export default function AdminPage() {
                                                                         <td className="col-muted text-xs">{ev.created_by}</td>
                                                                         <td className="col-muted">{new Date(ev.created_at).toLocaleDateString()}</td>
                                                                         <td>
-                                                                            <button 
-                                                                                className={`btn btn-sm ${mappingEventId === ev.id ? 'btn-primary' : 'btn-ghost'}`}
-                                                                                onClick={() => startMapping(ev)}
-                                                                            >
-                                                                                Mapping ⚙️
-                                                                            </button>
+                                                                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                                                <button
+                                                                                    className={`btn btn-sm ${mappingEventId === ev.id ? 'btn-primary' : 'btn-ghost'}`}
+                                                                                    onClick={() => startMapping(ev)}
+                                                                                >
+                                                                                    Code Mapping ⚙️
+                                                                                </button>
+                                                                                <button
+                                                                                    className="btn btn-ghost btn-sm text-danger"
+                                                                                    style={{ color: '#ef4444' }}
+                                                                                    onClick={() => setDeletingEvent({ id: ev.id, name: ev.event_name })}
+                                                                                    title="Delete Event"
+                                                                                >
+                                                                                    🗑️ Delete
+                                                                                </button>
+                                                                            </div>
                                                                         </td>
                                                                     </tr>
                                                                 ))}
@@ -1757,83 +2169,118 @@ export default function AdminPage() {
                                                 )}
                                             </div>
 
-                                            {/* Participant Mapping Section */}
+                                            {/* Code Assignment Section */}
                                             {mappingEventId && (() => {
                                                 const ev = selectedRoom.events.find(e => e.id === mappingEventId);
                                                 if (!ev) return null;
+
+                                                const eventM = mappings.filter(m => m.event_id === ev.id);
+                                                const eventParts = participants.filter(p => eventM.some(m => m.participant_id === p.id));
+
                                                 return (
                                                     <div className="card" style={{ marginTop: 16 }}>
                                                         <div className="card-header flex just-b items-c" style={{ flexWrap: 'wrap', gap: 12 }}>
                                                             <div>
-                                                                <h3>Code Mapping: {ev.event_name}</h3>
-                                                                <p className="text-xs col-muted mt-1">Assign judges' anonymous Codes to actual chest numbers.</p>
+                                                                <h3>Live Code Assignment: {ev.event_name}</h3>
+                                                                <p className="text-xs col-muted mt-1">Selected participants for this event are listed below. Enter code numbers manually.</p>
                                                             </div>
-                                                            <button className="btn btn-secondary btn-sm" onClick={() => setMappingEventId(null)}>Close Mapping</button>
+                                                            <div className="flex gap-2 items-c">
+                                                                <button
+                                                                    className="btn btn-ghost btn-sm text-danger text-xs"
+                                                                    onClick={() => handleClearAllCodes(ev.id)}
+                                                                    title="Clear all code numbers for this event"
+                                                                >
+                                                                    🧹 Clear All Codes
+                                                                </button>
+                                                                <button className="btn btn-secondary btn-sm" onClick={() => setMappingEventId(null)}>Close Assignment</button>
+                                                            </div>
                                                         </div>
                                                         <div className="card-body">
                                                             <div className="table-wrap">
                                                                 <table className="table">
                                                                     <thead>
                                                                         <tr>
-                                                                            <th style={{ width: 100 }}>Code</th>
-                                                                            <th style={{ width: 180 }}>Chest Number</th>
-                                                                            <th>Verification Status</th>
-                                                                            <th style={{ width: 120 }}>Actions</th>
+                                                                            <th>Participant Name</th>
+                                                                            <th>Chest No.</th>
+                                                                            <th>Category</th>
+                                                                            <th>Team</th>
+                                                                            <th style={{ width: 240 }}>Code Number (Manual Entry)</th>
                                                                         </tr>
                                                                     </thead>
                                                                     <tbody>
-                                                                        {Array.from({ length: ev.participant_count }, (_, i) => i + 1).map((num) => {
-                                                                            const val = localMappingInputs[num] || '';
-                                                                            const part = val ? participants.find(p => p.chest_number.toLowerCase() === val.trim().toLowerCase()) : null;
-                                                                            const isDuplicate = val ? Object.entries(localMappingInputs).some(([k, v]) => Number(k) !== num && v.trim().toLowerCase() === val.trim().toLowerCase()) : false;
-                                                                            
-                                                                            return (
-                                                                                <tr key={num}>
-                                                                                    <td><strong>Code {getCodeName(num, selectedRoom.code_type)}</strong></td>
-                                                                                    <td>
-                                                                                        <input
-                                                                                            type="text"
-                                                                                            className="input input-sm"
-                                                                                            placeholder="e.g. C101"
-                                                                                            style={{ textTransform: 'uppercase' }}
-                                                                                            value={val}
-                                                                                            onChange={(e) => {
-                                                                                                const newVal = e.target.value;
-                                                                                                setLocalMappingInputs(prev => ({ ...prev, [num]: newVal }));
-                                                                                            }}
-                                                                                        />
-                                                                                    </td>
-                                                                                    <td>
-                                                                                        {val === '' ? (
-                                                                                            <span className="text-xs col-muted">Not mapped</span>
-                                                                                        ) : part ? (
-                                                                                            isDuplicate ? (
-                                                                                                <span className="text-xs text-warning" style={{ fontWeight: 600 }}>
-                                                                                                    ⚠️ Duplicate: {part.name} ({teams.find(t => t.id === part.team_id)?.name || 'No Team'})
-                                                                                                </span>
-                                                                                            ) : (
-                                                                                                <span className="text-xs text-success" style={{ fontWeight: 600 }}>
-                                                                                                    ✅ {part.name} ({teams.find(t => t.id === part.team_id)?.name || 'No Team'})
-                                                                                                </span>
-                                                                                            )
-                                                                                        ) : (
-                                                                                            <span className="text-xs text-danger" style={{ fontWeight: 600 }}>
-                                                                                                ❌ Invalid Chest Number
+                                                                        {eventParts.length === 0 ? (
+                                                                            <tr>
+                                                                                <td colSpan={5}>
+                                                                                    <div className="empty-state"><p>No registered participants found for this event.</p></div>
+                                                                                </td>
+                                                                            </tr>
+                                                                        ) : (
+                                                                            eventParts.map((part) => {
+                                                                                const partMap = eventM.find(m => m.participant_id === part.id);
+                                                                                const codeNum = partMap ? partMap.participant_number : null;
+                                                                                const pTeam = teams.find(t => t.id === part.team_id);
+                                                                                const rawVal = localCodeInputs[part.id] !== undefined ? localCodeInputs[part.id] : (codeNum ? getCodeName(codeNum, selectedRoom.code_type) : '');
+                                                                                
+                                                                                const savedCodeStr = codeNum ? getCodeName(codeNum, selectedRoom.code_type) : '';
+                                                                                const isModified = rawVal.trim() !== savedCodeStr.trim();
+
+                                                                                return (
+                                                                                    <tr key={part.id}>
+                                                                                        <td><strong style={{ fontSize: '0.95rem' }}>{part.name}</strong></td>
+                                                                                        <td>
+                                                                                            <span className="room-code" style={{ padding: '4px 8px', fontSize: '0.82rem' }}>
+                                                                                                {part.chest_number}
                                                                                             </span>
-                                                                                        )}
-                                                                                    </td>
-                                                                                    <td>
-                                                                                        <button
-                                                                                            className="btn btn-primary btn-sm"
-                                                                                            onClick={() => saveSingleMapping(num, val)}
-                                                                                            disabled={val !== '' && (!part || isDuplicate)}
-                                                                                        >
-                                                                                            Save
-                                                                                        </button>
-                                                                                    </td>
-                                                                                </tr>
-                                                                            );
-                                                                        })}
+                                                                                        </td>
+                                                                                        <td>
+                                                                                            <span className="badge badge-blue" style={{ fontSize: '0.75rem' }}>
+                                                                                                {part.category || 'Senior'}
+                                                                                            </span>
+                                                                                        </td>
+                                                                                        <td>
+                                                                                            <span className={part.team_id ? 'badge badge-yellow' : 'badge badge-gray'}>
+                                                                                                {pTeam ? pTeam.name : 'No Team'}
+                                                                                            </span>
+                                                                                        </td>
+                                                                                        <td>
+                                                                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                                                                <input
+                                                                                                    type="text"
+                                                                                                    className="input input-sm"
+                                                                                                    style={{
+                                                                                                        width: 100,
+                                                                                                        fontWeight: 700,
+                                                                                                        textAlign: 'center',
+                                                                                                        textTransform: 'uppercase',
+                                                                                                        borderColor: rawVal.trim() ? 'var(--primary)' : 'var(--border)',
+                                                                                                        background: rawVal.trim() ? 'rgba(79, 70, 229, 0.04)' : 'white'
+                                                                                                    }}
+                                                                                                    placeholder="Enter code"
+                                                                                                    value={rawVal}
+                                                                                                    onChange={(e) => {
+                                                                                                        const val = e.target.value;
+                                                                                                        setLocalCodeInputs(prev => ({ ...prev, [part.id]: val }));
+                                                                                                    }}
+                                                                                                    onKeyDown={(e) => {
+                                                                                                        if (e.key === 'Enter') {
+                                                                                                            handleSaveTypedCode(ev.id, part.id, rawVal);
+                                                                                                        }
+                                                                                                    }}
+                                                                                                />
+                                                                                                <button
+                                                                                                    type="button"
+                                                                                                    className={`btn btn-sm ${isModified ? 'btn-primary' : 'btn-ghost'}`}
+                                                                                                    style={{ padding: '4px 12px', fontSize: '0.78rem', whiteSpace: 'nowrap' }}
+                                                                                                    onClick={() => handleSaveTypedCode(ev.id, part.id, rawVal)}
+                                                                                                >
+                                                                                                    Save
+                                                                                                </button>
+                                                                                            </div>
+                                                                                        </td>
+                                                                                    </tr>
+                                                                                );
+                                                                            })
+                                                                        )}
                                                                     </tbody>
                                                                 </table>
                                                             </div>
@@ -1844,7 +2291,6 @@ export default function AdminPage() {
                                         </motion.div>
                                     )}
 
-                                    {/* Live Scores tab */}
                                     {roomTab === 'scores' && (
                                         <motion.div key="scores-tab"
                                             initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
@@ -1857,22 +2303,22 @@ export default function AdminPage() {
                                                         <div className="empty-state">
                                                             <div className="empty-state-icon">📊</div>
                                                             <h4>No events yet</h4>
-                                                            <p>Judges must create events before scores appear here.</p>
+                                                            <p>Create an event above to see live scores.</p>
                                                         </div>
                                                     </div>
                                                 </div>
                                             ) : (
                                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                                                     {selectedRoom.events.map((ev) => (
-                                                         <EventScoreCard 
-                                                             key={ev.id} 
-                                                             event={ev} 
-                                                             room={selectedRoom} 
-                                                             participants={participants}
-                                                             teams={teams}
-                                                             mappings={mappings}
-                                                         />
-                                                     ))}
+                                                        <EventScoreCard
+                                                            key={ev.id}
+                                                            event={ev}
+                                                            room={selectedRoom}
+                                                            participants={participants}
+                                                            teams={teams}
+                                                            mappings={mappings}
+                                                        />
+                                                    ))}
                                                 </div>
                                             )}
                                         </motion.div>
@@ -1880,11 +2326,11 @@ export default function AdminPage() {
                                 </AnimatePresence>
                             </motion.div>
                         )}
-                    </AnimatePresence>
-                </div>
+                    </div>
 
-                <Footer />
-            </main>
+                    <Footer />
+                </main>
+            </div>
 
             {/* Toasts */}
             <div className="toast-container">
@@ -1904,12 +2350,388 @@ export default function AdminPage() {
                 </AnimatePresence>
             </div>
 
+            {/* Admin Event Creation Modal */}
+            <AnimatePresence>
+                {showCreateEventModal && selectedRoom && (
+                    <div className="sidebar-overlay" style={{ zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+                        <motion.div
+                            className="card"
+                            style={{ maxWidth: 540, width: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}
+                            initial={{ scale: 0.9, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.9, opacity: 0 }}
+                        >
+                            <div className="card-header flex just-b items-c">
+                                <h3>➕ Create Event for Room {selectedRoom.secret_code}</h3>
+                                <button className="btn btn-ghost btn-sm" onClick={() => setShowCreateEventModal(false)}>✕</button>
+                            </div>
+                            <div className="card-body" style={{ overflowY: 'auto' }}>
+                                <form onSubmit={handleAdminCreateEvent} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                                    <div className="form-group">
+                                        <label className="form-label">Event Name</label>
+                                        <input
+                                            type="text"
+                                            className="input"
+                                            placeholder="e.g. Qur'an Recitation Senior"
+                                            value={newEventName}
+                                            onChange={(e) => setNewEventName(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+
+                                    <div className="form-group">
+                                        <label className="form-label">Category</label>
+                                        <select
+                                            className="select"
+                                            value={newEventCategory}
+                                            onChange={(e) => {
+                                                const cat = e.target.value;
+                                                setNewEventCategory(cat);
+                                                if (cat !== 'Other') {
+                                                    setEventCategoryFilter(cat);
+                                                }
+                                            }}
+                                        >
+                                            <option value="Kiddies">Kiddies</option>
+                                            <option value="Sub Junior">Sub Junior</option>
+                                            <option value="Junior">Junior</option>
+                                            <option value="Senior">Senior</option>
+                                            <option value="Super Senior">Super Senior</option>
+                                            <option value="General">General</option>
+                                            <option value="Other">Other Category...</option>
+                                        </select>
+                                    </div>
+
+                                    {newEventCategory === 'Other' && (
+                                        <div className="form-group">
+                                            <label className="form-label">Custom Category Name</label>
+                                            <input
+                                                type="text"
+                                                className="input"
+                                                placeholder="e.g. Calligraphy"
+                                                value={newEventCustomCategory}
+                                                onChange={(e) => {
+                                                    const custom = e.target.value;
+                                                    setNewEventCustomCategory(custom);
+                                                    if (custom.trim()) {
+                                                        setEventCategoryFilter(custom.trim());
+                                                    }
+                                                }}
+                                                required
+                                            />
+                                        </div>
+                                    )}
+
+                                    <div className="form-group">
+                                        <div className="flex just-b items-c mb-2">
+                                            <label className="form-label" style={{ margin: 0 }}>
+                                                Select Participating Students ({selectedParticipantIdsForEvent.length} selected)
+                                            </label>
+                                            <div className="flex gap-2">
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm text-xs"
+                                                    style={{ color: 'var(--primary)', fontWeight: 600 }}
+                                                    onClick={() => {
+                                                        const activeCat = eventCategoryFilter === 'all' ? newEventCategory : eventCategoryFilter;
+                                                        const catPartIds = participants
+                                                            .filter(p => (p.category || 'Senior') === activeCat)
+                                                            .map(p => p.id);
+                                                        
+                                                        // Toggle selection of matching category
+                                                        const allSelected = catPartIds.length > 0 && catPartIds.every(id => selectedParticipantIdsForEvent.includes(id));
+                                                        if (allSelected) {
+                                                            setSelectedParticipantIdsForEvent(prev => prev.filter(id => !catPartIds.includes(id)));
+                                                        } else {
+                                                            setSelectedParticipantIdsForEvent(prev => [...new Set([...prev, ...catPartIds])]);
+                                                        }
+                                                    }}
+                                                >
+                                                    ⚡ Select All {eventCategoryFilter === 'all' ? newEventCategory : eventCategoryFilter}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm text-xs"
+                                                    onClick={() => {
+                                                        if (selectedParticipantIdsForEvent.length === participants.length) {
+                                                            setSelectedParticipantIdsForEvent([]);
+                                                        } else {
+                                                            setSelectedParticipantIdsForEvent(participants.map(p => p.id));
+                                                        }
+                                                    }}
+                                                >
+                                                    {selectedParticipantIdsForEvent.length === participants.length ? 'Deselect All' : 'Select All'}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Category Filter Pills */}
+                                        <div className="flex gap-1 mb-2" style={{ flexWrap: 'wrap' }}>
+                                            {['all', newEventCategory, 'Kiddies', 'Sub Junior', 'Junior', 'Senior', 'Super Senior', 'General']
+                                                .filter((val, index, self) => self.indexOf(val) === index) // Unique options
+                                                .map((cat) => (
+                                                    <button
+                                                        key={cat}
+                                                        type="button"
+                                                        className={`btn btn-sm ${eventCategoryFilter === cat ? 'btn-primary' : 'btn-ghost'}`}
+                                                        style={{ padding: '2px 8px', fontSize: '0.72rem' }}
+                                                        onClick={() => setEventCategoryFilter(cat)}
+                                                    >
+                                                        {cat === 'all' ? 'All' : cat === newEventCategory ? `⭐ ${cat}` : cat}
+                                                    </button>
+                                                ))}
+                                        </div>
+
+                                        <input
+                                            type="text"
+                                            className="input input-sm mb-2"
+                                            placeholder="Search student name, chest #..."
+                                            value={eventParticipantSearch}
+                                            onChange={(e) => setEventParticipantSearch(e.target.value)}
+                                        />
+
+                                        <div style={{
+                                            border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
+                                            maxHeight: 200, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 6
+                                        }}>
+                                            {participants.length === 0 ? (
+                                                <p className="text-xs col-muted p-2">No registered participants. Register participants first.</p>
+                                            ) : (() => {
+                                                const filteredParts = participants.filter(p => {
+                                                    const matchesSearch = p.name.toLowerCase().includes(eventParticipantSearch.toLowerCase()) || p.chest_number.toLowerCase().includes(eventParticipantSearch.toLowerCase());
+                                                    const partCat = p.category || 'Senior';
+                                                    const matchesCat = eventCategoryFilter === 'all' ? true : partCat === eventCategoryFilter;
+                                                    return matchesSearch && matchesCat;
+                                                });
+
+                                                if (filteredParts.length === 0) {
+                                                    return (
+                                                        <div className="p-3 text-center">
+                                                            <p className="text-xs col-muted" style={{ margin: 0 }}>
+                                                                No participants registered in category <strong>"{eventCategoryFilter}"</strong>.
+                                                            </p>
+                                                            {eventCategoryFilter !== 'all' && (
+                                                                <button
+                                                                    type="button"
+                                                                    className="btn btn-ghost btn-sm text-xs mt-1"
+                                                                    style={{ color: 'var(--primary)', fontWeight: 600 }}
+                                                                    onClick={() => setEventCategoryFilter('all')}
+                                                                >
+                                                                    Show All Participants
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                }
+
+                                                return filteredParts.map((part) => {
+                                                    const isChecked = selectedParticipantIdsForEvent.includes(part.id);
+                                                    const team = teams.find(t => t.id === part.team_id);
+                                                    return (
+                                                        <label key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', cursor: 'pointer', borderRadius: 4, background: isChecked ? 'var(--primary-light)' : 'transparent' }}>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={isChecked}
+                                                                onChange={(e) => {
+                                                                    if (e.target.checked) {
+                                                                        setSelectedParticipantIdsForEvent(prev => [...prev, part.id]);
+                                                                    } else {
+                                                                        setSelectedParticipantIdsForEvent(prev => prev.filter(id => id !== part.id));
+                                                                    }
+                                                                }}
+                                                            />
+                                                            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{part.name}</span>
+                                                            <span className="room-code text-xs">{part.chest_number}</span>
+                                                            <span className="badge badge-purple text-xs" style={{ padding: '1px 6px', fontSize: '0.7rem' }}>{part.category || 'Senior'}</span>
+                                                            {team && <span className="badge badge-gray text-xs">{team.name}</span>}
+                                                        </label>
+                                                    );
+                                                });
+                                            })()}
+                                        </div>
+                                    </div>
+
+                                    <div className="flex gap-3 mt-3">
+                                        <button type="button" className="btn btn-secondary flex-1" onClick={() => setShowCreateEventModal(false)}>Cancel</button>
+                                        <button type="submit" className="btn btn-primary flex-1" disabled={creatingEvent}>
+                                            {creatingEvent ? 'Creating Event...' : 'Create Event'}
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
+            {/* Participant Achievement History Detail Modal */}
+            <AnimatePresence>
+                {viewingHistoryParticipant && (() => {
+                    const ach = getParticipantAchievements(viewingHistoryParticipant.id);
+                    const team = teams.find(t => t.id === viewingHistoryParticipant.team_id);
+
+                    return (
+                        <div className="sidebar-overlay" style={{ zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+                            <motion.div
+                                className="card"
+                                style={{ maxWidth: 700, width: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}
+                                initial={{ scale: 0.9, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                exit={{ scale: 0.9, opacity: 0 }}
+                            >
+                                <div className="card-header flex just-b items-c">
+                                    <div>
+                                        <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                            🏆 {viewingHistoryParticipant.name}
+                                            <span className="room-code">{viewingHistoryParticipant.chest_number}</span>
+                                            {team && <span className="badge badge-yellow">{team.name}</span>}
+                                        </h3>
+                                        <p className="text-xs col-muted mt-1">Comprehensive Competition Achievement History</p>
+                                    </div>
+                                    <button className="btn btn-ghost btn-sm" onClick={() => setViewingHistoryParticipant(null)}>✕</button>
+                                </div>
+                                <div className="card-body" style={{ overflowY: 'auto' }}>
+                                    {/* Stats Grid */}
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12, marginBottom: 20 }}>
+                                        <div style={{ background: 'var(--bg-muted)', padding: 12, borderRadius: 'var(--r-sm)', textAlign: 'center' }}>
+                                            <div className="text-xs col-muted font-600">Events Participated</div>
+                                            <div style={{ fontSize: '1.4rem', fontWeight: 800 }}>{ach.totalEvents}</div>
+                                        </div>
+                                        <div style={{ background: '#FEF3C7', border: '1px solid #FCD34D', padding: 12, borderRadius: 'var(--r-sm)', textAlign: 'center' }}>
+                                            <div className="text-xs font-600" style={{ color: '#92400E' }}>Prizes Won</div>
+                                            <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#B45309' }}>
+                                                🥇{ach.firstPrizes} 🥈{ach.secondPrizes} 🥉{ach.thirdPrizes}
+                                            </div>
+                                        </div>
+                                        <div style={{ background: '#ECFDF5', border: '1px solid #A7F3D0', padding: 12, borderRadius: 'var(--r-sm)', textAlign: 'center' }}>
+                                            <div className="text-xs font-600" style={{ color: '#065F46' }}>Grade A Count</div>
+                                            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#047857' }}>{ach.gradeA}</div>
+                                        </div>
+                                        <div style={{ background: '#EEF2FF', border: '1px solid #C7D2FE', padding: 12, borderRadius: 'var(--r-sm)', textAlign: 'center' }}>
+                                            <div className="text-xs font-600" style={{ color: '#3730A3' }}>Total Points</div>
+                                            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#4338CA' }}>{ach.totalPoints} pts</div>
+                                        </div>
+                                    </div>
+
+                                    {/* History Table */}
+                                    <h4>Event Breakdown</h4>
+                                    <div className="table-wrap" style={{ marginTop: 10 }}>
+                                        <table className="table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Event Name</th>
+                                                    <th>Category</th>
+                                                    <th>Room</th>
+                                                    <th>Avg Score</th>
+                                                    <th>Grade</th>
+                                                    <th>Rank Position</th>
+                                                    <th>Prize / Status</th>
+                                                    <th>Points</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {ach.eventsList.length === 0 ? (
+                                                    <tr>
+                                                        <td colSpan={8}>
+                                                            <div className="empty-state"><p>No score records found for this participant yet.</p></div>
+                                                        </td>
+                                                    </tr>
+                                                ) : (
+                                                    ach.eventsList.map((ev) => (
+                                                        <tr key={ev.eventId}>
+                                                            <td><strong>{ev.eventName}</strong></td>
+                                                            <td><span className="badge badge-gray">{ev.category}</span></td>
+                                                            <td><span className="room-code" style={{ fontSize: '0.75rem' }}>{ev.roomCode}</span></td>
+                                                            <td><strong>{ev.avgScore}</strong></td>
+                                                            <td>
+                                                                <span className={`badge ${ev.grade === 'A' ? 'badge-green' : ev.grade === 'B' ? 'badge-yellow' : 'badge-gray'}`}>
+                                                                    Grade {ev.grade}
+                                                                </span>
+                                                            </td>
+                                                            <td>#{ev.rank}</td>
+                                                            <td><strong>{ev.prize}</strong></td>
+                                                            <td><strong style={{ color: 'var(--primary)' }}>+{ev.points} pts</strong></td>
+                                                        </tr>
+                                                    ))
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        </div>
+                    );
+                })()}
+            </AnimatePresence>
+
             {/* Confirmation Modals */}
             <AnimatePresence>
+                {deletingEvent && (
+                    <div className="sidebar-overlay" style={{ zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+                        <motion.div
+                            className="card"
+                            style={{ maxWidth: 440, width: '100%', overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)' }}
+                            initial={{ scale: 0.9, opacity: 0, y: 15 }}
+                            animate={{ scale: 1, opacity: 1, y: 0 }}
+                            exit={{ scale: 0.9, opacity: 0, y: 15 }}
+                            transition={{ duration: 0.2 }}
+                        >
+                            <div style={{ padding: '24px 24px 16px', textAlign: 'center' }}>
+                                <div style={{
+                                    width: 56,
+                                    height: 56,
+                                    borderRadius: '50%',
+                                    background: '#FEF2F2',
+                                    color: '#EF4444',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    margin: '0 auto 16px',
+                                    fontSize: '1.6rem',
+                                    border: '1px solid #FCA5A5'
+                                }}>
+                                    🗑️
+                                </div>
+                                <h3 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: 8 }}>
+                                    Delete Event?
+                                </h3>
+                                <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', lineHeight: 1.5, margin: 0 }}>
+                                    Are you sure you want to delete <strong style={{ color: 'var(--text-main)', fontWeight: 700 }}>"{deletingEvent.name}"</strong>?
+                                </p>
+                                <p style={{ fontSize: '0.82rem', color: '#EF4444', marginTop: 12, background: '#FEF2F2', padding: '8px 12px', borderRadius: 8, border: '1px solid #FCA5A5', lineHeight: 1.4 }}>
+                                    ⚠️ Warning: This will permanently delete all recorded scores and code mappings for this event.
+                                </p>
+                            </div>
+
+                            <div className="flex just-e gap-2" style={{ padding: '16px 24px 24px', background: '#F9FAFB', borderTop: '1px solid var(--border)' }}>
+                                <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
+                                    style={{ padding: '8px 18px', fontSize: '0.85rem' }}
+                                    onClick={() => setDeletingEvent(null)}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-sm"
+                                    style={{ background: '#EF4444', color: 'white', border: 'none', padding: '8px 20px', fontSize: '0.85rem', fontWeight: 600, borderRadius: 'var(--r-sm)' }}
+                                    onClick={() => {
+                                        const target = deletingEvent;
+                                        setDeletingEvent(null);
+                                        confirmDeleteEvent(target.id, target.name);
+                                    }}
+                                >
+                                    🗑️ Delete Event
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
                 {confirmDeleteRoom && (
                     <div className="sidebar-overlay" style={{ zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-                        <motion.div 
-                            className="card" 
+                        <motion.div
+                            className="card"
                             style={{ maxWidth: 400, width: '100%' }}
                             initial={{ scale: 0.9, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
@@ -1933,8 +2755,8 @@ export default function AdminPage() {
 
                 {confirmRemoveJudge && (
                     <div className="sidebar-overlay" style={{ zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-                        <motion.div 
-                            className="card" 
+                        <motion.div
+                            className="card"
                             style={{ maxWidth: 400, width: '100%' }}
                             initial={{ scale: 0.9, opacity: 0 }}
                             animate={{ scale: 1, opacity: 1 }}
@@ -1961,14 +2783,14 @@ export default function AdminPage() {
 }
 
 /* ── Event Score Card ── */
-function EventScoreCard({ 
-    event, 
+function EventScoreCard({
+    event,
     room,
     participants,
     teams,
     mappings
-}: { 
-    event: EventWithScores; 
+}: {
+    event: EventWithScores;
     room: RoomWithDetails;
     participants: Participant[];
     teams: Team[];
@@ -2031,7 +2853,7 @@ function EventScoreCard({
                             {results.map((row, idx) => {
                                 const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : idx + 1;
                                 const pct = Math.round((row.total / maxScore) * 100);
-                                
+
                                 const mapping = mappings.find(m => m.event_id === event.id && m.participant_number === row.num);
                                 const participant = mapping ? participants.find(p => p.id === mapping.participant_id) : null;
                                 const team = participant ? teams.find(t => t.id === participant.team_id) : null;

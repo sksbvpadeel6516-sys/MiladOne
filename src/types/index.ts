@@ -57,6 +57,7 @@ export interface Participant {
     name: string;
     chest_number: string;
     team_id: string | null;
+    category?: string | null;
     created_at: string;
 }
 

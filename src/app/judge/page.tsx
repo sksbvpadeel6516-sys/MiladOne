@@ -7,7 +7,7 @@ import { supabase, SUPER_ADMIN_EMAIL } from '@/lib/supabase';
 import type { Room, Event, Score } from '@/types';
 import Footer from '@/components/Footer';
 
-type Step = 'join' | 'events' | 'create-event' | 'scoring' | 'submitted';
+type Step = 'join' | 'events' | 'scoring' | 'submitted';
 interface Toast { id: number; msg: string; type: 'success' | 'error' | 'info'; }
 let _tid = 0;
 
@@ -49,11 +49,6 @@ export default function JudgePage() {
     const [joinedRoom, setJoinedRoom] = useState<Room | null>(null);
     const [events, setEvents] = useState<Event[]>([]);
     const [loadingEvents, setLoadingEvents] = useState(false);
-    const [eventName, setEventName] = useState('');
-    const [category, setCategory] = useState('');
-    const [customCategory, setCustomCategory] = useState('');
-    const [participantCount, setParticipantCount] = useState(3);
-    const [creatingEvent, setCreatingEvent] = useState(false);
     const [scoringEvent, setScoringEvent] = useState<Event | null>(null);
     const [scores, setScores] = useState<Record<number, string>>({});
     const [submitting, setSubmitting] = useState(false);
@@ -141,10 +136,10 @@ export default function JudgePage() {
         if (!joinedRoom) return;
         const ch = supabase.channel(`j-events-${joinedRoom.id}`)
             .on('postgres_changes', {
-                event: 'INSERT', schema: 'public', table: 'events',
+                event: '*', schema: 'public', table: 'events',
                 filter: `room_id=eq.${joinedRoom.id}`,
-            }, (payload) => {
-                setEvents((prev) => [payload.new as Event, ...prev.filter((e) => e.id !== (payload.new as Event).id)]);
+            }, () => {
+                loadEvents(joinedRoom.id);
             })
             .on('postgres_changes', {
                 event: 'UPDATE', schema: 'public', table: 'rooms',
@@ -154,7 +149,7 @@ export default function JudgePage() {
             })
             .subscribe();
         return () => { supabase.removeChannel(ch); };
-    }, [joinedRoom]);
+    }, [joinedRoom, loadEvents]);
 
     const loadExisting = useCallback(async (eventId: string) => {
         const { data } = await supabase.from('scores').select('*')
@@ -176,12 +171,10 @@ export default function JudgePage() {
                 .eq('secret_code', code).single();
             if (rErr || !room) throw new Error('Room not found. Check the code.');
 
-            // Check if already in this room
             const { data: alreadyIn } = await supabase.from('judges').select('id')
                 .eq('room_id', room.id).eq('email', userEmail).single();
 
             if (!alreadyIn) {
-                // To join a new room, first leave any current room (clean slate)
                 await supabase.from('judges').delete().eq('email', userEmail);
                 
                 const { data: current } = await supabase.from('judges').select('id').eq('room_id', room.id);
@@ -203,60 +196,6 @@ export default function JudgePage() {
         }
     };
 
-    const updateRoomCodeType = async (type: 'number' | 'letter') => {
-        if (!joinedRoom) return;
-        try {
-            const { error } = await supabase
-                .from('rooms')
-                .update({ code_type: type })
-                .eq('id', joinedRoom.id);
-            if (error) throw error;
-            setJoinedRoom(prev => prev ? { ...prev, code_type: type } : null);
-            showToast(`Room code style changed to ${type === 'letter' ? 'Letters' : 'Numbers'}.`, 'success');
-        } catch (err) {
-            console.error(err);
-            showToast('Failed to update code style.', 'error');
-        }
-    };
-
-    const CATEGORY_OPTIONS = ['Kiddies', 'Sub Junior', 'Junior', 'Senior', 'Super Senior', 'Other'] as const;
-
-    const handleCreateEvent = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!joinedRoom || !eventName.trim()) { showToast('Event name is required.', 'error'); return; }
-        if (!category) { showToast('Please select a category.', 'error'); return; }
-        const resolvedCategory = category === 'Other' ? customCategory.trim() : category;
-        if (!resolvedCategory) { showToast('Please enter a custom category name.', 'error'); return; }
-        setCreatingEvent(true);
-        try {
-            const { data: newEvent, error } = await supabase.from('events').insert({
-                room_id: joinedRoom.id, 
-                institution_id: joinedRoom.institution_id,
-                event_name: eventName.trim(),
-                category: resolvedCategory,
-                participant_count: participantCount, 
-                created_by: userEmail,
-            }).select().single();
-            if (error) throw error;
-
-            showToast('Event created!', 'success');
-            setEventName('');
-            setCategory('');
-            setCustomCategory('');
-            setParticipantCount(3);
-            setScoringEvent(newEvent as Event);
-            const init: Record<number, string> = {};
-            for (let i = 1; i <= (newEvent as Event).participant_count; i++) init[i] = '';
-            setScores(init);
-            setExistingScores([]);
-            setStep('scoring');
-        } catch (err: unknown) {
-            showToast(err instanceof Error ? err.message : 'Failed.', 'error');
-        } finally {
-            setCreatingEvent(false);
-        }
-    };
-
     const openScoring = async (ev: Event) => {
         setScoringEvent(ev);
         const init: Record<number, string> = {};
@@ -273,9 +212,9 @@ export default function JudgePage() {
             const v = scores[num];
             const labelStyle = joinedRoom.code_type === 'letter' ? 'Letter' : 'Number';
             const name = getCodeName(num, joinedRoom.code_type);
-            if (!v && v !== '0') { showToast(`Fill in score for Code ${labelStyle} ${name}.`, 'error'); return; }
+            if (!v && v !== '0') { showToast(`Fill in score for Participant ${name}.`, 'error'); return; }
             const n = Number(v);
-            if (isNaN(n) || n < 0 || n > 100) { showToast(`Code ${labelStyle} ${name}: score must be 0–100.`, 'error'); return; }
+            if (isNaN(n) || n < 0 || n > 100) { showToast(`Participant ${name}: score must be 0–100.`, 'error'); return; }
         }
         setSubmitting(true);
         try {
@@ -334,10 +273,7 @@ export default function JudgePage() {
         );
     }
 
-    /* Step index for indicator */
-    const stepIdx = ['join', 'events', 'scoring', 'submitted'].indexOf(
-        step === 'create-event' ? 'events' : step
-    );
+    const stepIdx = ['join', 'events', 'scoring', 'submitted'].indexOf(step);
     const stepLabels = [
         { label: 'Join Room' },
         { label: 'Events' },
@@ -472,65 +408,11 @@ export default function JudgePage() {
                         <motion.div key="events" variants={pageVariants} initial="initial" animate="in" exit="out">
                             <div className="section-header" style={{ marginBottom: 20 }}>
                                 <div>
-                                    <h2>Events</h2>
+                                    <h2>Available Events</h2>
                                     <p className="text-xs col-muted mt-1">
                                         Room <strong style={{ fontFamily: 'monospace' }}>{joinedRoom.secret_code}</strong>
-                                        {' '}· requires {joinedRoom.judge_count_required} judges
+                                        {' '}· Select an event created by your admin to start scoring
                                     </p>
-                                </div>
-                                <motion.button
-                                    id="btn-create-event"
-                                    onClick={() => setStep('create-event')}
-                                    className="btn btn-primary"
-                                    whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                                >
-                                    + Create Event
-                                </motion.button>
-                            </div>
-
-                            {/* Code Style Selector */}
-                            <div className="card" style={{ marginBottom: 20, border: '1px solid var(--border)', background: '#F8FAFC' }}>
-                                <div className="card-body" style={{ padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-                                    <div>
-                                        <h4 style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>Room Participant Code Style</h4>
-                                        <p className="text-xs col-muted" style={{ margin: 0 }}>Select if participants are identified by Numbers (1, 2...) or Letters (A, B...)</p>
-                                    </div>
-                                    <div className="flex gap-2" style={{ background: '#F1F5F9', padding: 4, borderRadius: 8 }}>
-                                        <button
-                                            type="button"
-                                            className="btn btn-sm"
-                                            style={{
-                                                padding: '6px 12px',
-                                                fontSize: '0.8rem',
-                                                borderRadius: 6,
-                                                fontWeight: 600,
-                                                background: joinedRoom.code_type === 'number' ? '#FFFFFF' : 'transparent',
-                                                color: joinedRoom.code_type === 'number' ? 'var(--primary)' : 'var(--text-secondary)',
-                                                boxShadow: joinedRoom.code_type === 'number' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                                                border: 'none',
-                                            }}
-                                            onClick={() => updateRoomCodeType('number')}
-                                        >
-                                            Numbers (1, 2, 3...)
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className="btn btn-sm"
-                                            style={{
-                                                padding: '6px 12px',
-                                                fontSize: '0.8rem',
-                                                borderRadius: 6,
-                                                fontWeight: 600,
-                                                background: joinedRoom.code_type === 'letter' ? '#FFFFFF' : 'transparent',
-                                                color: joinedRoom.code_type === 'letter' ? 'var(--primary)' : 'var(--text-secondary)',
-                                                boxShadow: joinedRoom.code_type === 'letter' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                                                border: 'none',
-                                            }}
-                                            onClick={() => updateRoomCodeType('letter')}
-                                        >
-                                            Letters (A, B, C...)
-                                        </button>
-                                    </div>
                                 </div>
                             </div>
 
@@ -543,8 +425,8 @@ export default function JudgePage() {
                                     <div className="card-body">
                                         <div className="empty-state">
                                             <div className="empty-state-icon">📋</div>
-                                            <h4>No events yet</h4>
-                                            <p>Create your first event using the button above.</p>
+                                            <h4>No events available yet</h4>
+                                            <p>Your competition administrator will create and assign events for this room.</p>
                                         </div>
                                     </div>
                                 </motion.div>
@@ -572,7 +454,6 @@ export default function JudgePage() {
                                                         </span>
                                                     )}
                                                     <span>👤 {ev.participant_count} participants</span>
-                                                    <span>🕐 {new Date(ev.created_at).toLocaleDateString()}</span>
                                                 </div>
                                             </div>
                                             <motion.button
@@ -587,129 +468,6 @@ export default function JudgePage() {
                                     ))}
                                 </motion.div>
                             )}
-                        </motion.div>
-                    )}
-
-                    {/* ── CREATE EVENT ── */}
-                    {step === 'create-event' && (
-                        <motion.div key="create-event" variants={pageVariants} initial="initial" animate="in" exit="out">
-                            <div style={{ maxWidth: 680, margin: '0 auto' }}>
-                                <div className="flex items-c gap-3" style={{ marginBottom: 20 }}>
-                                    <motion.button className="btn btn-secondary btn-sm" onClick={() => setStep('events')}
-                                        whileTap={{ scale: 0.96 }}>← Back</motion.button>
-                                    <h2>Create Event</h2>
-                                </div>
-                                <div className="card">
-                                    <div className="card-body">
-                                        <form onSubmit={handleCreateEvent} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-                                            <div className="form-group">
-                                                <label className="form-label">Event Name *</label>
-                                                <input id="input-event-name" type="text" className="input"
-                                                    placeholder="e.g. Solo Dance, Best Project, Group Performance"
-                                                    value={eventName} onChange={(e) => setEventName(e.target.value)}
-                                                    required autoFocus />
-                                            </div>
-
-                                            <div className="form-group">
-                                                <label className="form-label">Category *</label>
-                                                <select
-                                                    id="select-category"
-                                                    className="select"
-                                                    value={category}
-                                                    onChange={(e) => {
-                                                        setCategory(e.target.value);
-                                                        if (e.target.value !== 'Other') setCustomCategory('');
-                                                    }}
-                                                    required
-                                                >
-                                                    <option value="" disabled>Select a category…</option>
-                                                    {CATEGORY_OPTIONS.map((opt) => (
-                                                        <option key={opt} value={opt}>{opt}</option>
-                                                    ))}
-                                                </select>
-                                            </div>
-
-                                            <AnimatePresence>
-                                                {category === 'Other' && (
-                                                    <motion.div
-                                                        key="custom-category"
-                                                        className="form-group"
-                                                        initial={{ opacity: 0, height: 0, marginTop: -10 }}
-                                                        animate={{ opacity: 1, height: 'auto', marginTop: 0 }}
-                                                        exit={{ opacity: 0, height: 0, marginTop: -10 }}
-                                                        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] as const }}
-                                                        style={{ overflow: 'hidden' }}
-                                                    >
-                                                        <label className="form-label">Custom Category Name *</label>
-                                                        <input
-                                                            id="input-custom-category"
-                                                            type="text"
-                                                            className="input"
-                                                            placeholder="Enter Category Name"
-                                                            value={customCategory}
-                                                            onChange={(e) => setCustomCategory(e.target.value)}
-                                                            required
-                                                            autoFocus
-                                                        />
-                                                    </motion.div>
-                                                )}
-                                            </AnimatePresence>
-
-                                            <div className="form-group">
-                                                <label className="form-label">Number of Participants</label>
-                                                <select id="select-participant-count" className="select"
-                                                    value={participantCount}
-                                                    onChange={(e) => setParticipantCount(Number(e.target.value))}>
-                                                    {Array.from({ length: 30 }, (_, i) => i + 1).map((n) => (
-                                                        <option key={n} value={n}>{n} Participant{n !== 1 ? 's' : ''}</option>
-                                                    ))}
-                                                </select>
-                                                <p className="text-xs col-muted mt-1">
-                                                    Score inputs will be auto-labeled Code {joinedRoom?.code_type === 'letter' ? 'Letter' : 'Number'} {getCodeName(1, joinedRoom?.code_type)} – {getCodeName(participantCount, joinedRoom?.code_type)}.
-                                                </p>
-                                            </div>
- 
-                                            {/* Preview */}
-                                            <div style={{
-                                                background: 'var(--bg-hover)', border: '1px solid var(--border)',
-                                                borderRadius: 'var(--r-md)', padding: 16,
-                                            }}>
-                                                <p className="text-xs font-700 col-muted" style={{ textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Preview</p>
-                                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                                                    {Array.from({ length: Math.min(participantCount, 3) }, (_, i) => (
-                                                        <div key={i} className="participant-row" style={{ pointerEvents: 'none' }}>
-                                                            <div className="p-num">{getCodeName(i + 1, joinedRoom?.code_type)}</div>
-                                                            <div className="p-label">Code {joinedRoom?.code_type === 'letter' ? 'Letter' : 'Number'} {getCodeName(i + 1, joinedRoom?.code_type)}</div>
-                                                            <div style={{
-                                                                width: 100, height: 38, background: 'white',
-                                                                border: '1.5px solid var(--border)',
-                                                                borderRadius: 'var(--r-sm)',
-                                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                                            }}>
-                                                                <span className="text-xs col-muted">0 – 100</span>
-                                                            </div>
-                                                        </div>
-                                                    ))}
-                                                    {participantCount > 3 && (
-                                                        <p className="text-xs col-muted text-c" style={{ padding: '4px 0' }}>
-                                                            … and {participantCount - 3} more
-                                                        </p>
-                                                    )}
-                                                </div>
-                                            </div>
-
-                                            <motion.button id="btn-create-event-submit" type="submit"
-                                                className="btn btn-primary btn-full btn-lg"
-                                                disabled={creatingEvent}
-                                                whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.98 }}>
-                                                {creatingEvent
-                                                    ? <><div className="spinner spinner-sm spinner-white" /> Creating…</>
-                                                    : 'Create Event & Start Scoring →'}
-                                            </motion.button>
-                                        </form>
-                                    </div>
-                                </div>
-                            </div>
                         </motion.div>
                     )}
 
@@ -760,10 +518,12 @@ export default function JudgePage() {
                                                             : n >= 50 ? 'var(--primary)'
                                                                 : 'var(--danger)';
 
+                                                const codeLabel = getCodeName(num, joinedRoom?.code_type);
+
                                                 return (
                                                     <motion.div key={num} variants={itemV} className="participant-row">
-                                                        <div className="p-num">{getCodeName(num, joinedRoom?.code_type)}</div>
-                                                        <div className="p-label">Code {joinedRoom?.code_type === 'letter' ? 'Letter' : 'Number'} {getCodeName(num, joinedRoom?.code_type)}</div>
+                                                        <div className="p-num">{codeLabel}</div>
+                                                        <div className="p-label">Participant {codeLabel}</div>
                                                         <div className="p-score-wrap">
                                                             <input
                                                                 id={`score-p${num}`}
@@ -853,12 +613,6 @@ export default function JudgePage() {
                                                 className="btn btn-primary btn-full btn-lg"
                                                 whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.98 }}>
                                                 Score Another Event
-                                            </motion.button>
-                                            <motion.button id="btn-create-another"
-                                                onClick={() => setStep('create-event')}
-                                                className="btn btn-secondary btn-full btn-lg"
-                                                whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.98 }}>
-                                                + Create New Event
                                             </motion.button>
                                         </div>
                                     </div>
