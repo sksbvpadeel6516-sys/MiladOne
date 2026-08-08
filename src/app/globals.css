@@ -372,7 +372,7 @@ h4 {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
-  z-index: 59;
+  z-index: 49;
   backdrop-filter: blur(2px);
 }
 
@@ -3213,10 +3213,16 @@ h4 {
     height: calc(100vh - var(--header-h));
     transform: translateX(-100%);
     box-shadow: var(--shadow-xl);
+    z-index: 60;
   }
 
   .admin-sidebar.open {
     transform: translateX(0);
+  }
+
+  .sidebar-overlay {
+    display: block;
+    z-index: 55;
   }
 }
 
