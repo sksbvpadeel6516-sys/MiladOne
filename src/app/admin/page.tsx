@@ -899,7 +899,7 @@ export default function AdminPage() {
                 }
             }
 
-            if (institutionId) loadRooms(institutionId);
+            if (institutionId) { loadRooms(institutionId); loadTeamsAndParticipants(institutionId); }
         } catch (err: any) {
             showToast(err?.message || 'Failed to save code', 'error');
         }
@@ -1036,8 +1036,8 @@ export default function AdminPage() {
 
                             let rPoints = 0;
                             if (currentRank === 1) rPoints = 10;
-                            else if (currentRank === 2) rPoints = 3;
-                            else if (currentRank === 3) rPoints = 1;
+                            else if (currentRank === 2) rPoints = 5;
+                            else if (currentRank === 3) rPoints = 3;
 
                             let gradePoints = 0;
                             if (res.avg >= 80) gradePoints = 5;
@@ -1047,7 +1047,19 @@ export default function AdminPage() {
                             const totalPoints = rPoints + gradePoints;
 
                             // Collect all unique team IDs of participants belonging to this group (res.num)
-                            const groupMappings = mappings.filter(m => m.event_id === event.id && (m.participant_number === res.num || (m.participant_number === null && event.participant_count === 1)));
+                            let groupMappings = mappings.filter(m => m.event_id === event.id && m.participant_number === res.num);
+                            if (groupMappings.length === 0) {
+                                const allEventMappings = mappings
+                                    .filter(m => m.event_id === event.id)
+                                    .sort((a, b) => (a.participant_number ?? Infinity) - (b.participant_number ?? Infinity) || a.created_at.localeCompare(b.created_at));
+                                const getKey = (m: typeof allEventMappings[0]) => m.participant_number ?? (participants.find(p => p.id === m.participant_id)?.team_id || m.id);
+                                const groupKeys = Array.from(new Set(allEventMappings.map(getKey)));
+                                const targetKey = groupKeys[res.num - 1];
+                                if (targetKey !== undefined) {
+                                    groupMappings = allEventMappings.filter(m => getKey(m) === targetKey);
+                                }
+                            }
+
                             const uniqueTeamIds = new Set<string>();
                             
                             groupMappings.forEach(m => {
@@ -1056,6 +1068,14 @@ export default function AdminPage() {
                                     uniqueTeamIds.add(part.team_id);
                                 }
                             });
+
+                            // Teamwise fallback for group events if no individual participant mappings exist
+                            if (isGroup && uniqueTeamIds.size === 0 && teams.length > 0) {
+                                const fallbackTeam = teams[(res.num - 1) % teams.length];
+                                if (fallbackTeam) {
+                                    uniqueTeamIds.add(fallbackTeam.id);
+                                }
+                            }
 
                             // Award totalPoints ONCE per team represented in this group entry
                             uniqueTeamIds.forEach(teamId => {
@@ -1091,7 +1111,13 @@ export default function AdminPage() {
 
                         const totalPoints = rankPoints + gradePoints;
 
-                        const mapping = mappings.find(m => m.event_id === event.id && m.participant_number === res.num);
+                        let mapping = mappings.find(m => m.event_id === event.id && m.participant_number === res.num);
+                        if (!mapping) {
+                            const allEventMappings = mappings
+                                .filter(m => m.event_id === event.id)
+                                .sort((a, b) => (a.participant_number ?? Infinity) - (b.participant_number ?? Infinity) || a.created_at.localeCompare(b.created_at));
+                            mapping = allEventMappings[res.num - 1];
+                        }
                         if (mapping) {
                             const part = participants.find(p => p.id === mapping.participant_id);
                             if (part && part.team_id) {
@@ -1165,7 +1191,13 @@ export default function AdminPage() {
 
                     const totalPoints = rankPoints + gradePoints;
 
-                    const mapping = mappings.find(m => m.event_id === event.id && m.participant_number === res.num);
+                    let mapping = mappings.find(m => m.event_id === event.id && m.participant_number === res.num);
+                    if (!mapping) {
+                        const allEventMappings = mappings
+                            .filter(m => m.event_id === event.id)
+                            .sort((a, b) => (a.participant_number ?? Infinity) - (b.participant_number ?? Infinity) || a.created_at.localeCompare(b.created_at));
+                        mapping = allEventMappings[res.num - 1];
+                    }
                     if (mapping) {
                         const cur = stand.get(mapping.participant_id);
                         if (cur) {
@@ -3920,9 +3952,41 @@ function EventScoreCard({
                                 const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : idx + 1;
                                 const pct = Math.round((row.total / maxScore) * 100);
 
-                                const mapping = mappings.find(m => m.event_id === event.id && m.participant_number === row.num);
-                                const participant = mapping ? participants.find(p => p.id === mapping.participant_id) : null;
-                                const team = participant ? teams.find(t => t.id === participant.team_id) : null;
+                                const isGroup = event.event_type === 'group';
+                                // Try exact participant_number match first
+                                let matchingMappings = mappings.filter(m => m.event_id === event.id && m.participant_number === row.num);
+                                // Fallback: for events where participant_number is null in mappings,
+                                // resolve by ordering all event mappings and picking by index
+                                if (matchingMappings.length === 0) {
+                                    const allEventMappings = mappings
+                                        .filter(m => m.event_id === event.id)
+                                        .sort((a, b) => (a.participant_number ?? Infinity) - (b.participant_number ?? Infinity) || a.created_at.localeCompare(b.created_at));
+                                    const getKey = (m: typeof allEventMappings[0]) => m.participant_number ?? (participants.find(p => p.id === m.participant_id)?.team_id || m.id);
+                                    if (isGroup) {
+                                        const groupKeys = Array.from(new Set(allEventMappings.map(getKey)));
+                                        const targetKey = groupKeys[row.num - 1];
+                                        if (targetKey !== undefined) {
+                                            matchingMappings = allEventMappings.filter(m => getKey(m) === targetKey);
+                                        }
+                                    } else {
+                                        const target = allEventMappings[row.num - 1];
+                                        if (target) {
+                                            matchingMappings = [target];
+                                        }
+                                    }
+                                }
+                                const matchingParts = participants.filter(p => matchingMappings.some(m => m.participant_id === p.id));
+                                let matchingTeams = [...new Set(matchingParts.map(p => {
+                                    const t = teams.find(tm => tm.id === p.team_id);
+                                    return t ? t.name : null;
+                                }).filter(Boolean))];
+
+                                if (isGroup && matchingTeams.length === 0 && teams.length > 0) {
+                                    const fallbackTeam = teams[(row.num - 1) % teams.length];
+                                    if (fallbackTeam) {
+                                        matchingTeams = [fallbackTeam.name];
+                                    }
+                                }
 
                                 const avgVal = row.ps.length > 0 ? row.total / row.ps.length : null;
                                 let gradeBadge = <span className="col-muted">—</span>;
@@ -3955,9 +4019,61 @@ function EventScoreCard({
                                     <tr key={row.num}>
                                         <td><strong>{medal}</strong></td>
                                         <td><strong>Code {getCodeName(row.num, room.code_type)}</strong></td>
-                                        <td>{participant ? participant.name : <span className="col-muted">—</span>}</td>
-                                        <td>{participant ? <span className="room-code" style={{ fontSize: '0.75rem', padding: '2px 6px' }}>{participant.chest_number}</span> : <span className="col-muted">—</span>}</td>
-                                        <td>{team ? <span className="badge badge-yellow">{team.name}</span> : <span className="col-muted">—</span>}</td>
+                                        <td>
+                                            {matchingParts.length > 0 ? (
+                                                isGroup ? (
+                                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 280 }}>
+                                                        {matchingParts.map(p => (
+                                                            <span key={p.id} className="badge badge-purple" style={{ fontSize: '0.72rem', padding: '2px 6px' }}>
+                                                                {p.name}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <strong>{matchingParts[0].name}</strong>
+                                                )
+                                            ) : isGroup && matchingTeams.length > 0 ? (
+                                                <span className="badge badge-purple" style={{ fontSize: '0.72rem', padding: '2px 6px' }}>
+                                                    {matchingTeams[0]} (Group Entry)
+                                                </span>
+                                            ) : (
+                                                <span className="col-muted">—</span>
+                                            )}
+                                        </td>
+                                        <td>
+                                            {matchingParts.length > 0 ? (
+                                                isGroup ? (
+                                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                                        {matchingParts.map(p => (
+                                                            <span key={p.id} className="room-code" style={{ fontSize: '0.72rem', padding: '2px 6px' }}>
+                                                                {p.chest_number}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <span className="room-code" style={{ fontSize: '0.78rem', padding: '2px 6px' }}>
+                                                        {matchingParts[0].chest_number}
+                                                    </span>
+                                                )
+                                            ) : (
+                                                <span className="col-muted">—</span>
+                                            )}
+                                        </td>
+                                        <td>
+                                            {matchingTeams.length > 0 ? (
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                                    {matchingTeams.map(tName => (
+                                                        <span key={tName} className="badge badge-yellow" style={{ fontSize: '0.75rem', padding: '2px 6px' }}>
+                                                            {tName}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            ) : matchingParts.length > 0 ? (
+                                                <span className="badge badge-gray" style={{ fontSize: '0.75rem' }}>No Team</span>
+                                            ) : (
+                                                <span className="col-muted">—</span>
+                                            )}
+                                        </td>
                                         {judgeEmails.map((em) => {
                                             const sc = row.ps.find((s) => s.judge_email === em);
                                             return (
