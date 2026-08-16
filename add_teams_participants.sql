@@ -42,11 +42,11 @@ CREATE TABLE event_participant_mappings (
     participant_number INT CHECK (participant_number >= 1),
     participant_id UUID NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
-    UNIQUE(event_id, participant_number),
     UNIQUE(event_id, participant_id)
 );
 -- If modifying an existing database table, run:
 -- ALTER TABLE event_participant_mappings ALTER COLUMN participant_number DROP NOT NULL;
+-- ALTER TABLE event_participant_mappings DROP CONSTRAINT IF EXISTS event_participant_mappings_event_id_participant_number_key;
 
 -- ============================================================
 -- Enable Realtime

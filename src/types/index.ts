@@ -29,6 +29,7 @@ export interface Event {
     institution_id: string;
     event_name: string;
     category: string;
+    event_type: 'solo' | 'group';
     participant_count: number;
     created_by: string;
     created_at: string;

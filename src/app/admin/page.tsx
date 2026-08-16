@@ -137,10 +137,27 @@ export default function AdminPage() {
     const [newEventName, setNewEventName] = useState('');
     const [newEventCategory, setNewEventCategory] = useState('Kiddies');
     const [newEventCustomCategory, setNewEventCustomCategory] = useState('');
+    const [newEventType, setNewEventType] = useState<'solo' | 'group'>('solo');
     const [selectedParticipantIdsForEvent, setSelectedParticipantIdsForEvent] = useState<string[]>([]);
+    const [createGroupTeams, setCreateGroupTeams] = useState<{ id: string; name: string; participantIds: string[] }[]>([
+        { id: 'gt-1', name: 'Team 1', participantIds: [] },
+        { id: 'gt-2', name: 'Team 2', participantIds: [] }
+    ]);
     const [eventParticipantSearch, setEventParticipantSearch] = useState('');
     const [eventCategoryFilter, setEventCategoryFilter] = useState<string>('Kiddies');
     const [creatingEvent, setCreatingEvent] = useState(false);
+
+    // Edit Event Modal
+    const [editingEvent, setEditingEvent] = useState<Event | null>(null);
+    const [editEventName, setEditEventName] = useState('');
+    const [editEventCategory, setEditEventCategory] = useState('Kiddies');
+    const [editEventCustomCategory, setEditEventCustomCategory] = useState('');
+    const [editEventType, setEditEventType] = useState<'solo' | 'group'>('solo');
+    const [editEventParticipantIds, setEditEventParticipantIds] = useState<string[]>([]);
+    const [editGroupTeams, setEditGroupTeams] = useState<{ id: string; name: string; participantIds: string[] }[]>([]);
+    const [editEventParticipantSearch, setEditEventParticipantSearch] = useState('');
+    const [editEventCategoryFilter, setEditEventCategoryFilter] = useState<string>('all');
+    const [savingEdit, setSavingEdit] = useState(false);
 
     // Event Mappings & Live Code Assignment
     const [mappingEventId, setMappingEventId] = useState<string | null>(null);
@@ -298,6 +315,21 @@ export default function AdminPage() {
             showToast(err instanceof Error ? err.message : 'Failed to create room.', 'error');
         } finally {
             setCreating(false);
+        }
+    };
+
+    const handleUpdateRoomJudgeCount = async (roomId: string, newJudgeCount: number) => {
+        if (!institutionId) return;
+        try {
+            const { error } = await supabase
+                .from('rooms')
+                .update({ judge_count_required: newJudgeCount })
+                .eq('id', roomId);
+            if (error) throw error;
+            showToast(`Room judge requirement updated to ${newJudgeCount} judges!`, 'success');
+            loadRooms(institutionId);
+        } catch (err: unknown) {
+            showToast(err instanceof Error ? err.message : 'Failed to update judge count.', 'error');
         }
     };
 
@@ -571,13 +603,26 @@ export default function AdminPage() {
             return;
         }
 
-        if (selectedParticipantIdsForEvent.length === 0) {
-            showToast('Please select at least 1 participant for this event.', 'error');
-            return;
+        if (newEventType === 'solo') {
+            if (selectedParticipantIdsForEvent.length === 0) {
+                showToast('Please select at least 1 participant for this event.', 'error');
+                return;
+            }
+        } else {
+            const teamsWithMembers = createGroupTeams.filter(t => t.participantIds.length > 0);
+            if (teamsWithMembers.length < 2) {
+                showToast('Please add members to at least 2 competing teams for a Group Event.', 'error');
+                return;
+            }
         }
 
         setCreatingEvent(true);
         try {
+            const isGroup = newEventType === 'group';
+            const participantCount = isGroup
+                ? createGroupTeams.filter(t => t.participantIds.length > 0).length
+                : selectedParticipantIdsForEvent.length;
+
             const { data: event, error: evErr } = await supabase
                 .from('events')
                 .insert({
@@ -585,7 +630,8 @@ export default function AdminPage() {
                     institution_id: institutionId,
                     event_name: newEventName.trim(),
                     category,
-                    participant_count: selectedParticipantIdsForEvent.length,
+                    event_type: newEventType,
+                    participant_count: participantCount,
                     created_by: userEmail,
                 })
                 .select('*')
@@ -593,26 +639,195 @@ export default function AdminPage() {
 
             if (evErr || !event) throw evErr || new Error('Failed to create event');
 
-            // Create initial participant mappings without pre-filling code numbers
-            const mappingPayload = selectedParticipantIdsForEvent.map((partId) => ({
-                event_id: event.id,
-                participant_number: null,
-                participant_id: partId
-            }));
+            let mappingPayload: { event_id: string; participant_number: number | null; participant_id: string }[] = [];
 
-            const { error: mapErr } = await supabase.from('event_participant_mappings').insert(mappingPayload);
-            if (mapErr) console.error('Mapping creation warning:', mapErr);
+            if (isGroup) {
+                const activeTeams = createGroupTeams.filter(t => t.participantIds.length > 0);
+                activeTeams.forEach((gt, index) => {
+                    const codeNum = index + 1;
+                    gt.participantIds.forEach(partId => {
+                        mappingPayload.push({
+                            event_id: event.id,
+                            participant_number: codeNum,
+                            participant_id: partId
+                        });
+                    });
+                });
+            } else {
+                mappingPayload = selectedParticipantIdsForEvent.map((partId) => ({
+                    event_id: event.id,
+                    participant_number: null,
+                    participant_id: partId
+                }));
+            }
 
-            showToast(`Event "${event.event_name}" created with ${selectedParticipantIdsForEvent.length} participants!`, 'success');
+            if (mappingPayload.length > 0) {
+                const { error: mapErr } = await supabase.from('event_participant_mappings').insert(mappingPayload);
+                if (mapErr) {
+                    console.error('Mapping creation error:', mapErr.message || mapErr);
+                    throw new Error(`Failed to save participant mappings: ${mapErr.message || 'Database error'}`);
+                }
+            }
+
+            showToast(`${newEventType === 'group' ? 'Group' : 'Solo'} event "${event.event_name}" created successfully!`, 'success');
             setShowCreateEventModal(false);
             setNewEventName('');
             setNewEventCustomCategory('');
+            setNewEventType('solo');
             setSelectedParticipantIdsForEvent([]);
+            setCreateGroupTeams([
+                { id: 'gt-1', name: 'Team 1', participantIds: [] },
+                { id: 'gt-2', name: 'Team 2', participantIds: [] }
+            ]);
             loadRooms(institutionId);
         } catch (err: unknown) {
             showToast(err instanceof Error ? err.message : 'Failed to create event', 'error');
         } finally {
             setCreatingEvent(false);
+        }
+    };
+
+    // Open Edit Event Modal
+    const openEditEventModal = (ev: Event) => {
+        setEditingEvent(ev);
+        setEditEventName(ev.event_name);
+        const stdCategories = ['Kiddies', 'Sub Junior', 'Junior', 'Senior', 'Super Senior', 'General'];
+        if (stdCategories.includes(ev.category)) {
+            setEditEventCategory(ev.category);
+            setEditEventCustomCategory('');
+        } else {
+            setEditEventCategory('Other');
+            setEditEventCustomCategory(ev.category || '');
+        }
+        const evType = (ev.event_type as 'solo' | 'group') || 'solo';
+        setEditEventType(evType);
+
+        const eventMaps = mappings.filter(m => m.event_id === ev.id);
+        setEditEventParticipantIds(eventMaps.map(m => m.participant_id));
+
+        if (evType === 'group') {
+            const teamMap = new Map<number, string[]>();
+            eventMaps.forEach(m => {
+                const num = m.participant_number || 1;
+                if (!teamMap.has(num)) teamMap.set(num, []);
+                teamMap.get(num)!.push(m.participant_id);
+            });
+
+            const parsedTeams: { id: string; name: string; participantIds: string[] }[] = [];
+            const sortedNums = Array.from(teamMap.keys()).sort((a, b) => a - b);
+            if (sortedNums.length === 0) {
+                parsedTeams.push(
+                    { id: 'gt-1', name: 'Team 1', participantIds: [] },
+                    { id: 'gt-2', name: 'Team 2', participantIds: [] }
+                );
+            } else {
+                sortedNums.forEach((num, idx) => {
+                    parsedTeams.push({
+                        id: `gt-${num}`,
+                        name: `Team ${idx + 1}`,
+                        participantIds: teamMap.get(num) || []
+                    });
+                });
+            }
+            setEditGroupTeams(parsedTeams);
+        } else {
+            setEditGroupTeams([
+                { id: 'gt-1', name: 'Team 1', participantIds: [] },
+                { id: 'gt-2', name: 'Team 2', participantIds: [] }
+            ]);
+        }
+
+        setEditEventParticipantSearch('');
+        setEditEventCategoryFilter('all');
+    };
+
+    // Save Edited Event
+    const handleSaveEditEvent = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!editingEvent || !institutionId || !editEventName.trim()) return;
+
+        const category = editEventCategory === 'Other' ? editEventCustomCategory.trim() : editEventCategory;
+        if (!category) {
+            showToast('Please specify a category.', 'error');
+            return;
+        }
+
+        const isGroup = editEventType === 'group';
+
+        if (!isGroup && editEventParticipantIds.length === 0) {
+            showToast('Please select at least 1 participant for this solo event.', 'error');
+            return;
+        }
+
+        if (isGroup) {
+            const teamsWithMembers = editGroupTeams.filter(t => t.participantIds.length > 0);
+            if (teamsWithMembers.length < 2) {
+                showToast('Please assign members to at least 2 competing teams for a Group Event.', 'error');
+                return;
+            }
+        }
+
+        setSavingEdit(true);
+        try {
+            const activeTeams = editGroupTeams.filter(t => t.participantIds.length > 0);
+            const participantCount = isGroup ? activeTeams.length : editEventParticipantIds.length;
+
+            // Update event record
+            const { error: evErr } = await supabase
+                .from('events')
+                .update({
+                    event_name: editEventName.trim(),
+                    category,
+                    event_type: editEventType,
+                    participant_count: participantCount,
+                })
+                .eq('id', editingEvent.id);
+
+            if (evErr) throw evErr;
+
+            // Clear old mappings for this event
+            await supabase
+                .from('event_participant_mappings')
+                .delete()
+                .eq('event_id', editingEvent.id);
+
+            let newMappings: { event_id: string; participant_number: number | null; participant_id: string }[] = [];
+
+            if (isGroup) {
+                activeTeams.forEach((gt, index) => {
+                    const codeNum = index + 1;
+                    gt.participantIds.forEach(partId => {
+                        newMappings.push({
+                            event_id: editingEvent.id,
+                            participant_number: codeNum,
+                            participant_id: partId
+                        });
+                    });
+                });
+            } else {
+                newMappings = editEventParticipantIds.map(partId => ({
+                    event_id: editingEvent.id,
+                    participant_number: null,
+                    participant_id: partId,
+                }));
+            }
+
+            if (newMappings.length > 0) {
+                const { error: mapErr } = await supabase.from('event_participant_mappings').insert(newMappings);
+                if (mapErr) {
+                    console.error('Mapping update error:', mapErr.message || mapErr);
+                    throw new Error(`Failed to update participant mappings: ${mapErr.message || 'Database error'}`);
+                }
+            }
+
+            showToast(`Event "${editEventName.trim()}" updated successfully!`, 'success');
+            setEditingEvent(null);
+            loadRooms(institutionId);
+            loadTeamsAndParticipants(institutionId);
+        } catch (err: unknown) {
+            showToast(err instanceof Error ? err.message : 'Failed to update event', 'error');
+        } finally {
+            setSavingEdit(false);
         }
     };
 
@@ -690,6 +905,45 @@ export default function AdminPage() {
         }
     };
 
+    const handleSaveGroupTeamCode = async (eventId: string, participantIds: string[], rawInput: string) => {
+        const codeNum = parseCodeInputToNum(rawInput);
+        try {
+            if (codeNum !== null) {
+                await supabase
+                    .from('event_participant_mappings')
+                    .delete()
+                    .eq('event_id', eventId)
+                    .eq('participant_number', codeNum);
+
+                const { error } = await supabase
+                    .from('event_participant_mappings')
+                    .update({ participant_number: codeNum })
+                    .eq('event_id', eventId)
+                    .in('participant_id', participantIds);
+
+                if (error) throw error;
+                showToast(`Assigned Code ${getCodeName(codeNum, selectedRoom?.code_type)} to Team`, 'success');
+            } else {
+                const { error } = await supabase
+                    .from('event_participant_mappings')
+                    .update({ participant_number: null })
+                    .eq('event_id', eventId)
+                    .in('participant_id', participantIds);
+
+                if (error) throw error;
+                if (rawInput.trim()) {
+                    showToast('Invalid code format. Enter a number or letter.', 'error');
+                } else {
+                    showToast('Team code cleared', 'info');
+                }
+            }
+
+            if (institutionId) loadRooms(institutionId);
+        } catch (err: any) {
+            showToast(err?.message || 'Failed to save team code', 'error');
+        }
+    };
+
     const handleClearAllCodes = async (eventId: string) => {
         try {
             const { error } = await supabase
@@ -758,6 +1012,7 @@ export default function AdminPage() {
         rooms.forEach(room => {
             room.events.forEach(event => {
                 const normCat = event.category ? normalizeCategoryName(event.category) : '';
+                const isGroup = (event.event_type || 'solo') === 'group';
                 const nums = Array.from({ length: event.participant_count }, (_, i) => i + 1);
 
                 const ranked = nums.map((num) => {
@@ -767,40 +1022,90 @@ export default function AdminPage() {
                     return { num, total, avg, hasScores: ps.length > 0 };
                 }).filter(r => r.hasScores).sort((a, b) => b.total - a.total);
 
-                let currentRank = 1;
-                let prevTotal = -1;
-                ranked.forEach((res, index) => {
-                    if (index > 0 && res.total < prevTotal) {
-                        currentRank = index + 1;
-                    }
-                    prevTotal = res.total;
+                if (isGroup) {
+                    // Group event: calculate rank/grade for the whole group (treated as one entry)
+                    // The team receives the earned points (e.g. 10+5 = 15 pts) ONCE for the group entry, NOT multiplied by member count
+                    if (ranked.length > 0) {
+                        let currentRank = 1;
+                        let prevTotal = -1;
+                        ranked.forEach((res, index) => {
+                            if (index > 0 && res.total < prevTotal) {
+                                currentRank = index + 1;
+                            }
+                            prevTotal = res.total;
 
-                    let rankPoints = 0;
-                    if (currentRank === 1) rankPoints = 5;
-                    else if (currentRank === 2) rankPoints = 3;
-                    else if (currentRank === 3) rankPoints = 1;
+                            let rPoints = 0;
+                            if (currentRank === 1) rPoints = 10;
+                            else if (currentRank === 2) rPoints = 3;
+                            else if (currentRank === 3) rPoints = 1;
 
-                    let gradePoints = 0;
-                    if (res.avg >= 80) gradePoints = 5;
-                    else if (res.avg >= 60) gradePoints = 3;
-                    else gradePoints = 1;
+                            let gradePoints = 0;
+                            if (res.avg >= 80) gradePoints = 5;
+                            else if (res.avg >= 60) gradePoints = 3;
+                            else gradePoints = 1;
 
-                    const totalPoints = rankPoints + gradePoints;
+                            const totalPoints = rPoints + gradePoints;
 
-                    const mapping = mappings.find(m => m.event_id === event.id && m.participant_number === res.num);
-                    if (mapping) {
-                        const part = participants.find(p => p.id === mapping.participant_id);
-                        if (part && part.team_id) {
-                            const cur = stand.get(part.team_id);
-                            if (cur) {
-                                if (normCat) {
-                                    cur.categoryPoints[normCat] = (cur.categoryPoints[normCat] || 0) + totalPoints;
+                            // Collect all unique team IDs of participants belonging to this group (res.num)
+                            const groupMappings = mappings.filter(m => m.event_id === event.id && (m.participant_number === res.num || (m.participant_number === null && event.participant_count === 1)));
+                            const uniqueTeamIds = new Set<string>();
+                            
+                            groupMappings.forEach(m => {
+                                const part = participants.find(p => p.id === m.participant_id);
+                                if (part && part.team_id) {
+                                    uniqueTeamIds.add(part.team_id);
                                 }
-                                cur.overallPoints += totalPoints;
+                            });
+
+                            // Award totalPoints ONCE per team represented in this group entry
+                            uniqueTeamIds.forEach(teamId => {
+                                const cur = stand.get(teamId);
+                                if (cur) {
+                                    if (normCat) {
+                                        cur.categoryPoints[normCat] = (cur.categoryPoints[normCat] || 0) + totalPoints;
+                                    }
+                                    cur.overallPoints += totalPoints;
+                                }
+                            });
+                        });
+                    }
+                } else {
+                    // Solo event: existing behavior (5+5 point system)
+                    let currentRank = 1;
+                    let prevTotal = -1;
+                    ranked.forEach((res, index) => {
+                        if (index > 0 && res.total < prevTotal) {
+                            currentRank = index + 1;
+                        }
+                        prevTotal = res.total;
+
+                        let rankPoints = 0;
+                        if (currentRank === 1) rankPoints = 5;
+                        else if (currentRank === 2) rankPoints = 3;
+                        else if (currentRank === 3) rankPoints = 1;
+
+                        let gradePoints = 0;
+                        if (res.avg >= 80) gradePoints = 5;
+                        else if (res.avg >= 60) gradePoints = 3;
+                        else gradePoints = 1;
+
+                        const totalPoints = rankPoints + gradePoints;
+
+                        const mapping = mappings.find(m => m.event_id === event.id && m.participant_number === res.num);
+                        if (mapping) {
+                            const part = participants.find(p => p.id === mapping.participant_id);
+                            if (part && part.team_id) {
+                                const cur = stand.get(part.team_id);
+                                if (cur) {
+                                    if (normCat) {
+                                        cur.categoryPoints[normCat] = (cur.categoryPoints[normCat] || 0) + totalPoints;
+                                    }
+                                    cur.overallPoints += totalPoints;
+                                }
                             }
                         }
-                    }
-                });
+                    });
+                }
             });
         });
 
@@ -826,6 +1131,10 @@ export default function AdminPage() {
 
         rooms.forEach(room => {
             room.events.forEach(event => {
+                // IMPORTANT: Group event points do NOT count toward Individual Championship
+                const isGroup = (event.event_type || 'solo') === 'group';
+                if (isGroup) return; // Skip group events entirely for individual standings
+
                 const normCat = event.category ? normalizeCategoryName(event.category) : '';
                 const nums = Array.from({ length: event.participant_count }, (_, i) => i + 1);
 
@@ -895,6 +1204,7 @@ export default function AdminPage() {
         const eventsList: Array<{
             eventId: string;
             eventName: string;
+            eventType: 'solo' | 'group';
             category: string;
             roomCode: string;
             avgScore: number;
@@ -917,6 +1227,7 @@ export default function AdminPage() {
                 const map = partMappings.find(m => m.event_id === event.id);
                 if (!map) return;
 
+                const isGroup = (event.event_type || 'solo') === 'group';
                 const num = map.participant_number;
                 const ps = event.scores.filter(s => s.participant_number === num);
                 if (ps.length === 0) return;
@@ -951,9 +1262,17 @@ export default function AdminPage() {
 
                 let rankPoints = 0;
                 let prize = 'Participation';
-                if (rankPos === 1) { rankPoints = 5; prize = '🥇 1st Prize'; firstPrizes++; }
-                else if (rankPos === 2) { rankPoints = 3; prize = '🥈 2nd Prize'; secondPrizes++; }
-                else if (rankPos === 3) { rankPoints = 1; prize = '🥉 3rd Prize'; thirdPrizes++; }
+                if (isGroup) {
+                    // Group events use 10+5 point system
+                    if (rankPos === 1) { rankPoints = 10; prize = '🥇 1st Prize (Group)'; firstPrizes++; }
+                    else if (rankPos === 2) { rankPoints = 3; prize = '🥈 2nd Prize (Group)'; secondPrizes++; }
+                    else if (rankPos === 3) { rankPoints = 1; prize = '🥉 3rd Prize (Group)'; thirdPrizes++; }
+                } else {
+                    // Solo events use 5+5 point system
+                    if (rankPos === 1) { rankPoints = 5; prize = '🥇 1st Prize'; firstPrizes++; }
+                    else if (rankPos === 2) { rankPoints = 3; prize = '🥈 2nd Prize'; secondPrizes++; }
+                    else if (rankPos === 3) { rankPoints = 1; prize = '🥉 3rd Prize'; thirdPrizes++; }
+                }
 
                 let grade = 'C';
                 let gradePoints = 1;
@@ -967,6 +1286,7 @@ export default function AdminPage() {
                 eventsList.push({
                     eventId: event.id,
                     eventName: event.event_name,
+                    eventType: (event.event_type as 'solo' | 'group') || 'solo',
                     category: event.category || 'General',
                     roomCode: room.secret_code,
                     avgScore: Number(avgScore.toFixed(1)),
@@ -1258,10 +1578,29 @@ export default function AdminPage() {
                                                                 </button>
                                                             </td>
                                                             <td>
-                                                                <strong>{room.judges.length}</strong>
-                                                                <span className="col-muted"> / {room.judge_count_required}</span>
-                                                                {room.judges.length >= room.judge_count_required &&
-                                                                    <span className="badge badge-green" style={{ marginLeft: 6 }}>Full</span>}
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                                    <strong>{room.judges.length}</strong>
+                                                                    <span className="col-muted">/</span>
+                                                                    <select
+                                                                        className="select"
+                                                                        style={{
+                                                                            width: 'auto',
+                                                                            padding: '2px 8px',
+                                                                            height: 28,
+                                                                            fontSize: '0.78rem',
+                                                                            fontWeight: 600,
+                                                                            cursor: 'pointer'
+                                                                        }}
+                                                                        value={room.judge_count_required}
+                                                                        onChange={(e) => handleUpdateRoomJudgeCount(room.id, Number(e.target.value))}
+                                                                        title="Edit required judges count for this room"
+                                                                    >
+                                                                        <option value={2}>2 Judges</option>
+                                                                        <option value={3}>3 Judges</option>
+                                                                    </select>
+                                                                    {room.judges.length >= room.judge_count_required &&
+                                                                        <span className="badge badge-green" style={{ marginLeft: 4 }}>Full</span>}
+                                                                </div>
                                                             </td>
                                                             <td><strong>{room.events.length}</strong></td>
                                                             <td><strong>{room.events.reduce((s, e) => s + e.scores.length, 0)}</strong></td>
@@ -2025,7 +2364,35 @@ export default function AdminPage() {
                                 }}>
                                     {[
                                         { label: 'Room Code', value: <button className="room-code" onClick={() => copyCode(selectedRoom.secret_code)}>{selectedRoom.secret_code} ⎘</button> },
-                                        { label: 'Judges Joined', value: <strong style={{ fontSize: '1.3rem' }}>{selectedRoom.judges.length} / {selectedRoom.judge_count_required}</strong> },
+                                        {
+                                            label: 'Judges Required',
+                                            value: (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                    <strong style={{ fontSize: '1.3rem' }}>{selectedRoom.judges.length}</strong>
+                                                    <span className="col-muted" style={{ fontSize: '1.1rem' }}>/</span>
+                                                    <select
+                                                        className="select"
+                                                        style={{
+                                                            width: 'auto',
+                                                            padding: '2px 10px',
+                                                            height: 32,
+                                                            fontSize: '0.88rem',
+                                                            fontWeight: 700,
+                                                            borderColor: 'var(--primary)',
+                                                            background: 'rgba(79, 70, 229, 0.05)',
+                                                            color: 'var(--primary)',
+                                                            cursor: 'pointer'
+                                                        }}
+                                                        value={selectedRoom.judge_count_required}
+                                                        onChange={(e) => handleUpdateRoomJudgeCount(selectedRoom.id, Number(e.target.value))}
+                                                        title="Edit required judges for this room"
+                                                    >
+                                                        <option value={2}>2 Judges</option>
+                                                        <option value={3}>3 Judges</option>
+                                                    </select>
+                                                </div>
+                                            )
+                                        },
                                         { label: 'Events', value: <strong style={{ fontSize: '1.3rem' }}>{selectedRoom.events.length}</strong> },
                                         { label: 'Score Entries', value: <strong style={{ fontSize: '1.3rem' }}>{selectedRoom.events.reduce((s, e) => s + e.scores.length, 0)}</strong> },
                                     ].map((item) => (
@@ -2134,7 +2501,12 @@ export default function AdminPage() {
                                                                     <tr key={ev.id}>
                                                                         <td>
                                                                             <strong style={{ display: 'block' }}>{ev.event_name}</strong>
-                                                                            {ev.category && <span className="badge badge-gray" style={{ marginTop: 4, display: 'inline-block', padding: '2px 6px', fontSize: '0.7rem' }}>{ev.category}</span>}
+                                                                            <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
+                                                                                {ev.category && <span className="badge badge-gray" style={{ padding: '2px 6px', fontSize: '0.7rem' }}>{ev.category}</span>}
+                                                                                <span className={`badge ${ev.event_type === 'group' ? 'badge-purple' : 'badge-blue'}`} style={{ padding: '2px 6px', fontSize: '0.7rem', fontWeight: 600 }}>
+                                                                                    {ev.event_type === 'group' ? '👥 Group Event' : '👤 Solo Event'}
+                                                                                </span>
+                                                                            </div>
                                                                         </td>
                                                                         <td><strong>{ev.participant_count}</strong></td>
                                                                         <td>
@@ -2150,6 +2522,14 @@ export default function AdminPage() {
                                                                                     onClick={() => startMapping(ev)}
                                                                                 >
                                                                                     Code Mapping ⚙️
+                                                                                </button>
+                                                                                <button
+                                                                                    className="btn btn-ghost btn-sm"
+                                                                                    style={{ color: 'var(--primary)', fontWeight: 600 }}
+                                                                                    onClick={() => openEditEventModal(ev)}
+                                                                                    title="Edit Event Details & Participants"
+                                                                                >
+                                                                                    ✏️ Edit
                                                                                 </button>
                                                                                 <button
                                                                                     className="btn btn-ghost btn-sm text-danger"
@@ -2169,125 +2549,293 @@ export default function AdminPage() {
                                                 )}
                                             </div>
 
-                                            {/* Code Assignment Section */}
-                                            {mappingEventId && (() => {
-                                                const ev = selectedRoom.events.find(e => e.id === mappingEventId);
-                                                if (!ev) return null;
+                                                                                         {/* Code Assignment Section */}
+                                             {mappingEventId && (() => {
+                                                 const ev = selectedRoom.events.find(e => e.id === mappingEventId);
+                                                 if (!ev) return null;
 
-                                                const eventM = mappings.filter(m => m.event_id === ev.id);
-                                                const eventParts = participants.filter(p => eventM.some(m => m.participant_id === p.id));
+                                                 const eventM = mappings.filter(m => m.event_id === ev.id);
+                                                 const isGroup = ev.event_type === 'group';
 
-                                                return (
-                                                    <div className="card" style={{ marginTop: 16 }}>
-                                                        <div className="card-header flex just-b items-c" style={{ flexWrap: 'wrap', gap: 12 }}>
-                                                            <div>
-                                                                <h3>Live Code Assignment: {ev.event_name}</h3>
-                                                                <p className="text-xs col-muted mt-1">Selected participants for this event are listed below. Enter code numbers manually.</p>
-                                                            </div>
-                                                            <div className="flex gap-2 items-c">
-                                                                <button
-                                                                    className="btn btn-ghost btn-sm text-danger text-xs"
-                                                                    onClick={() => handleClearAllCodes(ev.id)}
-                                                                    title="Clear all code numbers for this event"
-                                                                >
-                                                                    🧹 Clear All Codes
-                                                                </button>
-                                                                <button className="btn btn-secondary btn-sm" onClick={() => setMappingEventId(null)}>Close Assignment</button>
-                                                            </div>
-                                                        </div>
-                                                        <div className="card-body">
-                                                            <div className="table-wrap">
-                                                                <table className="table">
-                                                                    <thead>
-                                                                        <tr>
-                                                                            <th>Participant Name</th>
-                                                                            <th>Chest No.</th>
-                                                                            <th>Category</th>
-                                                                            <th>Team</th>
-                                                                            <th style={{ width: 240 }}>Code Number (Manual Entry)</th>
-                                                                        </tr>
-                                                                    </thead>
-                                                                    <tbody>
-                                                                        {eventParts.length === 0 ? (
-                                                                            <tr>
-                                                                                <td colSpan={5}>
-                                                                                    <div className="empty-state"><p>No registered participants found for this event.</p></div>
-                                                                                </td>
-                                                                            </tr>
-                                                                        ) : (
-                                                                            eventParts.map((part) => {
-                                                                                const partMap = eventM.find(m => m.participant_id === part.id);
-                                                                                const codeNum = partMap ? partMap.participant_number : null;
-                                                                                const pTeam = teams.find(t => t.id === part.team_id);
-                                                                                const rawVal = localCodeInputs[part.id] !== undefined ? localCodeInputs[part.id] : (codeNum ? getCodeName(codeNum, selectedRoom.code_type) : '');
-                                                                                
-                                                                                const savedCodeStr = codeNum ? getCodeName(codeNum, selectedRoom.code_type) : '';
-                                                                                const isModified = rawVal.trim() !== savedCodeStr.trim();
+                                                 type GroupTeamRow = {
+                                                     key: string;
+                                                     teamLabel: string;
+                                                     participantIds: string[];
+                                                     memberParts: Participant[];
+                                                     codeNum: number | null;
+                                                     institutionTeamName: string | null;
+                                                 };
 
-                                                                                return (
-                                                                                    <tr key={part.id}>
-                                                                                        <td><strong style={{ fontSize: '0.95rem' }}>{part.name}</strong></td>
-                                                                                        <td>
-                                                                                            <span className="room-code" style={{ padding: '4px 8px', fontSize: '0.82rem' }}>
-                                                                                                {part.chest_number}
-                                                                                            </span>
-                                                                                        </td>
-                                                                                        <td>
-                                                                                            <span className="badge badge-blue" style={{ fontSize: '0.75rem' }}>
-                                                                                                {part.category || 'Senior'}
-                                                                                            </span>
-                                                                                        </td>
-                                                                                        <td>
-                                                                                            <span className={part.team_id ? 'badge badge-yellow' : 'badge badge-gray'}>
-                                                                                                {pTeam ? pTeam.name : 'No Team'}
-                                                                                            </span>
-                                                                                        </td>
-                                                                                        <td>
-                                                                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                                                                                <input
-                                                                                                    type="text"
-                                                                                                    className="input input-sm"
-                                                                                                    style={{
-                                                                                                        width: 100,
-                                                                                                        fontWeight: 700,
-                                                                                                        textAlign: 'center',
-                                                                                                        textTransform: 'uppercase',
-                                                                                                        borderColor: rawVal.trim() ? 'var(--primary)' : 'var(--border)',
-                                                                                                        background: rawVal.trim() ? 'rgba(79, 70, 229, 0.04)' : 'white'
-                                                                                                    }}
-                                                                                                    placeholder="Enter code"
-                                                                                                    value={rawVal}
-                                                                                                    onChange={(e) => {
-                                                                                                        const val = e.target.value;
-                                                                                                        setLocalCodeInputs(prev => ({ ...prev, [part.id]: val }));
-                                                                                                    }}
-                                                                                                    onKeyDown={(e) => {
-                                                                                                        if (e.key === 'Enter') {
-                                                                                                            handleSaveTypedCode(ev.id, part.id, rawVal);
-                                                                                                        }
-                                                                                                    }}
-                                                                                                />
-                                                                                                <button
-                                                                                                    type="button"
-                                                                                                    className={`btn btn-sm ${isModified ? 'btn-primary' : 'btn-ghost'}`}
-                                                                                                    style={{ padding: '4px 12px', fontSize: '0.78rem', whiteSpace: 'nowrap' }}
-                                                                                                    onClick={() => handleSaveTypedCode(ev.id, part.id, rawVal)}
-                                                                                                >
-                                                                                                    Save
-                                                                                                </button>
-                                                                                            </div>
-                                                                                        </td>
-                                                                                    </tr>
-                                                                                );
-                                                                            })
-                                                                        )}
-                                                                    </tbody>
-                                                                </table>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })()}
+                                                 let groupRows: GroupTeamRow[] = [];
+                                                 let soloParts: Participant[] = [];
+
+                                                 if (isGroup) {
+                                                     const numberGroups = new Map<number, string[]>();
+                                                     const nullParts: string[] = [];
+
+                                                     eventM.forEach(m => {
+                                                         if (m.participant_number !== null && m.participant_number !== undefined) {
+                                                             if (!numberGroups.has(m.participant_number)) {
+                                                                 numberGroups.set(m.participant_number, []);
+                                                             }
+                                                             numberGroups.get(m.participant_number)!.push(m.participant_id);
+                                                         } else {
+                                                             nullParts.push(m.participant_id);
+                                                         }
+                                                     });
+
+                                                     let teamCounter = 1;
+                                                     const sortedNums = Array.from(numberGroups.keys()).sort((a, b) => a - b);
+                                                     sortedNums.forEach((num) => {
+                                                         const pIds = numberGroups.get(num) || [];
+                                                         const members = participants.filter(p => pIds.includes(p.id));
+                                                         const firstTeam = members.length > 0 ? teams.find(t => t.id === members[0].team_id) : null;
+                                                         groupRows.push({
+                                                             key: `num-${num}`,
+                                                             teamLabel: `Team ${teamCounter++}`,
+                                                             participantIds: pIds,
+                                                             memberParts: members,
+                                                             codeNum: num,
+                                                             institutionTeamName: firstTeam ? firstTeam.name : null
+                                                         });
+                                                     });
+
+                                                     if (nullParts.length > 0) {
+                                                         const byTeamId = new Map<string, string[]>();
+                                                         nullParts.forEach(pId => {
+                                                             const part = participants.find(p => p.id === pId);
+                                                             const tId = part?.team_id || 'no-team';
+                                                             if (!byTeamId.has(tId)) byTeamId.set(tId, []);
+                                                             byTeamId.get(tId)!.push(pId);
+                                                         });
+
+                                                         byTeamId.forEach((pIds, tId) => {
+                                                             const members = participants.filter(p => pIds.includes(p.id));
+                                                             const pTeam = teams.find(t => t.id === tId);
+                                                             groupRows.push({
+                                                                 key: `team-${tId}`,
+                                                                 teamLabel: `Team ${teamCounter++}`,
+                                                                 participantIds: pIds,
+                                                                 memberParts: members,
+                                                                 codeNum: null,
+                                                                 institutionTeamName: pTeam ? pTeam.name : null
+                                                             });
+                                                         });
+                                                     }
+                                                 } else {
+                                                     soloParts = participants.filter(p => eventM.some(m => m.participant_id === p.id));
+                                                 }
+
+                                                 return (
+                                                     <div className="card" style={{ marginTop: 16 }}>
+                                                         <div className="card-header flex just-b items-c" style={{ flexWrap: 'wrap', gap: 12 }}>
+                                                             <div>
+                                                                 <h3>Live Code Assignment: {ev.event_name} {isGroup ? '(Group Event)' : '(Solo Event)'}</h3>
+                                                                 <p className="text-xs col-muted mt-1">
+                                                                     {isGroup
+                                                                         ? 'Assign code numbers team-wise. All participating members in a team will share the assigned code.'
+                                                                         : 'Selected participants for this event are listed below. Enter code numbers manually.'}
+                                                                 </p>
+                                                             </div>
+                                                             <div className="flex gap-2 items-c">
+                                                                 <button
+                                                                     className="btn btn-ghost btn-sm text-danger text-xs"
+                                                                     onClick={() => handleClearAllCodes(ev.id)}
+                                                                     title="Clear all code numbers for this event"
+                                                                 >
+                                                                     🧹 Clear All Codes
+                                                                 </button>
+                                                                 <button className="btn btn-secondary btn-sm" onClick={() => setMappingEventId(null)}>Close Assignment</button>
+                                                             </div>
+                                                         </div>
+                                                         <div className="card-body">
+                                                             <div className="table-wrap">
+                                                                 <table className="table">
+                                                                     <thead>
+                                                                         {isGroup ? (
+                                                                             <tr>
+                                                                                 <th>Competing Team</th>
+                                                                                 <th>Participating Members</th>
+                                                                                 <th>Categories</th>
+                                                                                 <th>Academy / Team</th>
+                                                                                 <th style={{ width: 240 }}>Code Number (Manual Entry)</th>
+                                                                             </tr>
+                                                                         ) : (
+                                                                             <tr>
+                                                                                 <th>Participant Name</th>
+                                                                                 <th>Chest No.</th>
+                                                                                 <th>Category</th>
+                                                                                 <th>Team</th>
+                                                                                 <th style={{ width: 240 }}>Code Number (Manual Entry)</th>
+                                                                             </tr>
+                                                                         )}
+                                                                     </thead>
+                                                                     <tbody>
+                                                                         {isGroup ? (
+                                                                             groupRows.length === 0 ? (
+                                                                                 <tr>
+                                                                                     <td colSpan={5}>
+                                                                                         <div className="empty-state"><p>No registered teams found for this group event.</p></div>
+                                                                                     </td>
+                                                                                 </tr>
+                                                                             ) : (
+                                                                                 groupRows.map((row) => {
+                                                                                     const inputKey = row.key;
+                                                                                     const codeNum = row.codeNum;
+                                                                                     const savedCodeStr = codeNum ? getCodeName(codeNum, selectedRoom.code_type) : '';
+                                                                                     const rawVal = localCodeInputs[inputKey] !== undefined
+                                                                                         ? localCodeInputs[inputKey]
+                                                                                         : savedCodeStr;
+                                                                                     const isModified = rawVal.trim() !== savedCodeStr.trim();
+                                                                                     const categories = [...new Set(row.memberParts.map(p => p.category || 'Senior'))].join(', ');
+
+                                                                                     return (
+                                                                                         <tr key={row.key}>
+                                                                                             <td>
+                                                                                                 <strong style={{ fontSize: '0.95rem', color: 'var(--primary)' }}>
+                                                                                                     🚩 {row.teamLabel}
+                                                                                                 </strong>
+                                                                                             </td>
+                                                                                             <td>
+                                                                                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                                                                                     {row.memberParts.map(part => (
+                                                                                                         <span key={part.id} className="badge badge-purple" style={{ padding: '4px 8px', fontSize: '0.78rem' }}>
+                                                                                                             <strong>{part.name}</strong> <span style={{ opacity: 0.8 }}>({part.chest_number})</span>
+                                                                                                         </span>
+                                                                                                     ))}
+                                                                                                 </div>
+                                                                                             </td>
+                                                                                             <td>
+                                                                                                 <span className="badge badge-blue" style={{ fontSize: '0.75rem' }}>
+                                                                                                     {categories}
+                                                                                                 </span>
+                                                                                             </td>
+                                                                                             <td>
+                                                                                                 <span className={row.institutionTeamName ? 'badge badge-yellow' : 'badge badge-gray'}>
+                                                                                                     {row.institutionTeamName || 'No Team'}
+                                                                                                 </span>
+                                                                                             </td>
+                                                                                             <td>
+                                                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                                                                     <input
+                                                                                                         type="text"
+                                                                                                         className="input input-sm"
+                                                                                                         style={{
+                                                                                                             width: 100,
+                                                                                                             fontWeight: 700,
+                                                                                                             textAlign: 'center',
+                                                                                                             textTransform: 'uppercase',
+                                                                                                             borderColor: rawVal.trim() ? 'var(--primary)' : 'var(--border)',
+                                                                                                             background: rawVal.trim() ? 'rgba(79, 70, 229, 0.04)' : 'white'
+                                                                                                         }}
+                                                                                                         placeholder="Enter code"
+                                                                                                         value={rawVal}
+                                                                                                         onChange={(e) => {
+                                                                                                             const val = e.target.value;
+                                                                                                             setLocalCodeInputs(prev => ({ ...prev, [inputKey]: val }));
+                                                                                                         }}
+                                                                                                         onKeyDown={(e) => {
+                                                                                                             if (e.key === 'Enter') {
+                                                                                                                 handleSaveGroupTeamCode(ev.id, row.participantIds, rawVal);
+                                                                                                             }
+                                                                                                         }}
+                                                                                                     />
+                                                                                                     <button
+                                                                                                         type="button"
+                                                                                                         className={`btn btn-sm ${isModified ? 'btn-primary' : 'btn-ghost'}`}
+                                                                                                         style={{ padding: '4px 12px', fontSize: '0.78rem', whiteSpace: 'nowrap' }}
+                                                                                                         onClick={() => handleSaveGroupTeamCode(ev.id, row.participantIds, rawVal)}
+                                                                                                     >
+                                                                                                         Save
+                                                                                                     </button>
+                                                                                                 </div>
+                                                                                             </td>
+                                                                                         </tr>
+                                                                                     );
+                                                                                 })
+                                                                             )
+                                                                         ) : (
+                                                                             soloParts.length === 0 ? (
+                                                                                 <tr>
+                                                                                     <td colSpan={5}>
+                                                                                         <div className="empty-state"><p>No registered participants found for this event.</p></div>
+                                                                                     </td>
+                                                                                 </tr>
+                                                                             ) : (
+                                                                                 soloParts.map((part) => {
+                                                                                     const partMap = eventM.find(m => m.participant_id === part.id);
+                                                                                     const codeNum = partMap ? partMap.participant_number : null;
+                                                                                     const pTeam = teams.find(t => t.id === part.team_id);
+                                                                                     const rawVal = localCodeInputs[part.id] !== undefined ? localCodeInputs[part.id] : (codeNum ? getCodeName(codeNum, selectedRoom.code_type) : '');
+                                                                                     
+                                                                                     const savedCodeStr = codeNum ? getCodeName(codeNum, selectedRoom.code_type) : '';
+                                                                                     const isModified = rawVal.trim() !== savedCodeStr.trim();
+
+                                                                                     return (
+                                                                                         <tr key={part.id}>
+                                                                                             <td><strong style={{ fontSize: '0.95rem' }}>{part.name}</strong></td>
+                                                                                             <td>
+                                                                                                 <span className="room-code" style={{ padding: '4px 8px', fontSize: '0.82rem' }}>
+                                                                                                     {part.chest_number}
+                                                                                                 </span>
+                                                                                             </td>
+                                                                                             <td>
+                                                                                                 <span className="badge badge-blue" style={{ fontSize: '0.75rem' }}>
+                                                                                                     {part.category || 'Senior'}
+                                                                                                 </span>
+                                                                                             </td>
+                                                                                             <td>
+                                                                                                 <span className={part.team_id ? 'badge badge-yellow' : 'badge badge-gray'}>
+                                                                                                     {pTeam ? pTeam.name : 'No Team'}
+                                                                                                 </span>
+                                                                                             </td>
+                                                                                             <td>
+                                                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                                                                     <input
+                                                                                                         type="text"
+                                                                                                         className="input input-sm"
+                                                                                                         style={{
+                                                                                                             width: 100,
+                                                                                                             fontWeight: 700,
+                                                                                                             textAlign: 'center',
+                                                                                                             textTransform: 'uppercase',
+                                                                                                             borderColor: rawVal.trim() ? 'var(--primary)' : 'var(--border)',
+                                                                                                             background: rawVal.trim() ? 'rgba(79, 70, 229, 0.04)' : 'white'
+                                                                                                         }}
+                                                                                                         placeholder="Enter code"
+                                                                                                         value={rawVal}
+                                                                                                         onChange={(e) => {
+                                                                                                             const val = e.target.value;
+                                                                                                             setLocalCodeInputs(prev => ({ ...prev, [part.id]: val }));
+                                                                                                         }}
+                                                                                                         onKeyDown={(e) => {
+                                                                                                             if (e.key === 'Enter') {
+                                                                                                                 handleSaveTypedCode(ev.id, part.id, rawVal);
+                                                                                                             }
+                                                                                                         }}
+                                                                                                     />
+                                                                                                     <button
+                                                                                                         type="button"
+                                                                                                         className={`btn btn-sm ${isModified ? 'btn-primary' : 'btn-ghost'}`}
+                                                                                                         style={{ padding: '4px 12px', fontSize: '0.78rem', whiteSpace: 'nowrap' }}
+                                                                                                         onClick={() => handleSaveTypedCode(ev.id, part.id, rawVal)}
+                                                                                                     >
+                                                                                                         Save
+                                                                                                     </button>
+                                                                                                 </div>
+                                                                                             </td>
+                                                                                         </tr>
+                                                                                     );
+                                                                                 })
+                                                                             )
+                                                                         )}
+                                                                     </tbody>
+                                                                 </table>
+                                                             </div>
+                                                         </div>
+                                                     </div>
+                                                 );
+                                             })()}
                                         </motion.div>
                                     )}
 
@@ -2368,6 +2916,49 @@ export default function AdminPage() {
                             <div className="card-body" style={{ overflowY: 'auto' }}>
                                 <form onSubmit={handleAdminCreateEvent} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
                                     <div className="form-group">
+                                        <label className="form-label">Event Type</label>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                                            <button
+                                                type="button"
+                                                className={`btn ${newEventType === 'solo' ? 'btn-primary' : 'btn-ghost'}`}
+                                                style={{
+                                                    border: newEventType === 'solo' ? '2px solid var(--primary)' : '1px solid var(--border)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    gap: 8,
+                                                    padding: '10px 14px',
+                                                    fontWeight: 600
+                                                }}
+                                                onClick={() => setNewEventType('solo')}
+                                            >
+                                                👤 Solo Event
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={`btn ${newEventType === 'group' ? 'btn-primary' : 'btn-ghost'}`}
+                                                style={{
+                                                    border: newEventType === 'group' ? '2px solid var(--primary)' : '1px solid var(--border)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    gap: 8,
+                                                    padding: '10px 14px',
+                                                    fontWeight: 600
+                                                }}
+                                                onClick={() => setNewEventType('group')}
+                                            >
+                                                👥 Group Event
+                                            </button>
+                                        </div>
+                                        <p className="text-xs col-muted mt-1">
+                                            {newEventType === 'solo'
+                                                ? '👤 Solo: Points count for both Solo & Team Championship.'
+                                                : '👥 Group: Points count EXCLUSIVELY for Team Championship (10+5 pts).'}
+                                        </p>
+                                    </div>
+
+                                    <div className="form-group">
                                         <label className="form-label">Event Name</label>
                                         <input
                                             type="text"
@@ -2422,139 +3013,602 @@ export default function AdminPage() {
                                         </div>
                                     )}
 
-                                    <div className="form-group">
-                                        <div className="flex just-b items-c mb-2">
-                                            <label className="form-label" style={{ margin: 0 }}>
-                                                Select Participating Students ({selectedParticipantIdsForEvent.length} selected)
-                                            </label>
-                                            <div className="flex gap-2">
+                                     {newEventType === 'group' ? (
+                                        <div className="form-group" style={{ background: '#F8FAFC', padding: 14, borderRadius: 8, border: '1px solid var(--border)' }}>
+                                            <div className="flex just-b items-c mb-3">
+                                                <div>
+                                                    <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700 }}>
+                                                        👥 Competing Teams ({createGroupTeams.length} Teams)
+                                                    </h4>
+                                                    <p className="text-xs col-muted style-normal" style={{ margin: '2px 0 0 0' }}>
+                                                        Assign participants team-wise. Each team competes as a single group unit.
+                                                    </p>
+                                                </div>
                                                 <button
                                                     type="button"
-                                                    className="btn btn-ghost btn-sm text-xs"
-                                                    style={{ color: 'var(--primary)', fontWeight: 600 }}
+                                                    className="btn btn-secondary btn-sm"
                                                     onClick={() => {
-                                                        const activeCat = eventCategoryFilter === 'all' ? newEventCategory : eventCategoryFilter;
-                                                        const catPartIds = participants
-                                                            .filter(p => (p.category || 'Senior') === activeCat)
-                                                            .map(p => p.id);
-                                                        
-                                                        // Toggle selection of matching category
-                                                        const allSelected = catPartIds.length > 0 && catPartIds.every(id => selectedParticipantIdsForEvent.includes(id));
-                                                        if (allSelected) {
-                                                            setSelectedParticipantIdsForEvent(prev => prev.filter(id => !catPartIds.includes(id)));
-                                                        } else {
-                                                            setSelectedParticipantIdsForEvent(prev => [...new Set([...prev, ...catPartIds])]);
-                                                        }
+                                                        setCreateGroupTeams(prev => [
+                                                            ...prev,
+                                                            { id: `gt-${Date.now()}`, name: `Team ${prev.length + 1}`, participantIds: [] }
+                                                        ]);
                                                     }}
                                                 >
-                                                    ⚡ Select All {eventCategoryFilter === 'all' ? newEventCategory : eventCategoryFilter}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost btn-sm text-xs"
-                                                    onClick={() => {
-                                                        if (selectedParticipantIdsForEvent.length === participants.length) {
-                                                            setSelectedParticipantIdsForEvent([]);
-                                                        } else {
-                                                            setSelectedParticipantIdsForEvent(participants.map(p => p.id));
-                                                        }
-                                                    }}
-                                                >
-                                                    {selectedParticipantIdsForEvent.length === participants.length ? 'Deselect All' : 'Select All'}
+                                                    ➕ Add Team
                                                 </button>
                                             </div>
-                                        </div>
 
-                                        {/* Category Filter Pills */}
-                                        <div className="flex gap-1 mb-2" style={{ flexWrap: 'wrap' }}>
-                                            {['all', newEventCategory, 'Kiddies', 'Sub Junior', 'Junior', 'Senior', 'Super Senior', 'General']
-                                                .filter((val, index, self) => self.indexOf(val) === index) // Unique options
-                                                .map((cat) => (
-                                                    <button
-                                                        key={cat}
-                                                        type="button"
-                                                        className={`btn btn-sm ${eventCategoryFilter === cat ? 'btn-primary' : 'btn-ghost'}`}
-                                                        style={{ padding: '2px 8px', fontSize: '0.72rem' }}
-                                                        onClick={() => setEventCategoryFilter(cat)}
-                                                    >
-                                                        {cat === 'all' ? 'All' : cat === newEventCategory ? `⭐ ${cat}` : cat}
-                                                    </button>
-                                                ))}
-                                        </div>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                                {createGroupTeams.map((gt, tIdx) => {
+                                                    const assignedElsewhere = createGroupTeams
+                                                        .filter((_, idx) => idx !== tIdx)
+                                                        .flatMap(t => t.participantIds);
 
-                                        <input
-                                            type="text"
-                                            className="input input-sm mb-2"
-                                            placeholder="Search student name, chest #..."
-                                            value={eventParticipantSearch}
-                                            onChange={(e) => setEventParticipantSearch(e.target.value)}
-                                        />
+                                                    const availableForTeam = participants.filter(p => !assignedElsewhere.includes(p.id));
 
-                                        <div style={{
-                                            border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
-                                            maxHeight: 200, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 6
-                                        }}>
-                                            {participants.length === 0 ? (
-                                                <p className="text-xs col-muted p-2">No registered participants. Register participants first.</p>
-                                            ) : (() => {
-                                                const filteredParts = participants.filter(p => {
-                                                    const matchesSearch = p.name.toLowerCase().includes(eventParticipantSearch.toLowerCase()) || p.chest_number.toLowerCase().includes(eventParticipantSearch.toLowerCase());
-                                                    const partCat = p.category || 'Senior';
-                                                    const matchesCat = eventCategoryFilter === 'all' ? true : partCat === eventCategoryFilter;
-                                                    return matchesSearch && matchesCat;
-                                                });
-
-                                                if (filteredParts.length === 0) {
                                                     return (
-                                                        <div className="p-3 text-center">
-                                                            <p className="text-xs col-muted" style={{ margin: 0 }}>
-                                                                No participants registered in category <strong>"{eventCategoryFilter}"</strong>.
-                                                            </p>
-                                                            {eventCategoryFilter !== 'all' && (
-                                                                <button
-                                                                    type="button"
-                                                                    className="btn btn-ghost btn-sm text-xs mt-1"
-                                                                    style={{ color: 'var(--primary)', fontWeight: 600 }}
-                                                                    onClick={() => setEventCategoryFilter('all')}
+                                                        <div key={gt.id} style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+                                                            <div className="flex just-b items-c mb-2">
+                                                                <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--primary)' }}>
+                                                                    🚩 {gt.name || `Team ${tIdx + 1}`} (Code {tIdx + 1})
+                                                                </span>
+                                                                {createGroupTeams.length > 2 && (
+                                                                    <button
+                                                                        type="button"
+                                                                        className="btn btn-ghost btn-sm text-danger text-xs"
+                                                                        onClick={() => {
+                                                                            setCreateGroupTeams(prev => prev.filter((_, idx) => idx !== tIdx));
+                                                                        }}
+                                                                    >
+                                                                        🗑️ Remove Team
+                                                                    </button>
+                                                                )}
+                                                            </div>
+
+                                                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10, minHeight: 28, alignItems: 'center' }}>
+                                                                {gt.participantIds.length === 0 ? (
+                                                                    <span className="text-xs col-muted italic">No students assigned to this team yet.</span>
+                                                                ) : (
+                                                                    gt.participantIds.map(pId => {
+                                                                        const part = participants.find(p => p.id === pId);
+                                                                        if (!part) return null;
+                                                                        const teamObj = teams.find(t => t.id === part.team_id);
+                                                                        return (
+                                                                            <span key={pId} className="badge badge-purple" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 8px', fontSize: '0.78rem' }}>
+                                                                                <span><strong>{part.name}</strong> ({part.chest_number})</span>
+                                                                                {teamObj && <span style={{ opacity: 0.8, fontSize: '0.7rem' }}>[{teamObj.name}]</span>}
+                                                                                <button
+                                                                                    type="button"
+                                                                                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'inherit', fontWeight: 'bold', marginLeft: 2 }}
+                                                                                    onClick={() => {
+                                                                                        setCreateGroupTeams(prev => prev.map((t, idx) => idx === tIdx ? { ...t, participantIds: t.participantIds.filter(id => id !== pId) } : t));
+                                                                                    }}
+                                                                                >
+                                                                                    ✕
+                                                                                </button>
+                                                                            </span>
+                                                                        );
+                                                                    })
+                                                                )}
+                                                            </div>
+
+                                                            <div className="flex gap-2 items-c">
+                                                                <select
+                                                                    className="select select-sm flex-1"
+                                                                    defaultValue=""
+                                                                    onChange={(e) => {
+                                                                        const selectedId = e.target.value;
+                                                                        if (!selectedId) return;
+                                                                        if (!gt.participantIds.includes(selectedId)) {
+                                                                            setCreateGroupTeams(prev => prev.map((t, idx) => idx === tIdx ? { ...t, participantIds: [...t.participantIds, selectedId] } : t));
+                                                                        }
+                                                                        e.target.value = "";
+                                                                    }}
                                                                 >
-                                                                    Show All Participants
-                                                                </button>
-                                                            )}
+                                                                    <option value="">➕ Add Student to {gt.name || `Team ${tIdx + 1}`}...</option>
+                                                                    {availableForTeam
+                                                                        .filter(p => !gt.participantIds.includes(p.id))
+                                                                        .map(p => {
+                                                                            const pTeam = teams.find(t => t.id === p.team_id);
+                                                                            return (
+                                                                                <option key={p.id} value={p.id}>
+                                                                                    {p.name} (Chest: {p.chest_number}) - {p.category || 'Senior'} {pTeam ? `[${pTeam.name}]` : ''}
+                                                                                </option>
+                                                                            );
+                                                                        })}
+                                                                </select>
+                                                            </div>
                                                         </div>
                                                     );
-                                                }
-
-                                                return filteredParts.map((part) => {
-                                                    const isChecked = selectedParticipantIdsForEvent.includes(part.id);
-                                                    const team = teams.find(t => t.id === part.team_id);
-                                                    return (
-                                                        <label key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', cursor: 'pointer', borderRadius: 4, background: isChecked ? 'var(--primary-light)' : 'transparent' }}>
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={isChecked}
-                                                                onChange={(e) => {
-                                                                    if (e.target.checked) {
-                                                                        setSelectedParticipantIdsForEvent(prev => [...prev, part.id]);
-                                                                    } else {
-                                                                        setSelectedParticipantIdsForEvent(prev => prev.filter(id => id !== part.id));
-                                                                    }
-                                                                }}
-                                                            />
-                                                            <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{part.name}</span>
-                                                            <span className="room-code text-xs">{part.chest_number}</span>
-                                                            <span className="badge badge-purple text-xs" style={{ padding: '1px 6px', fontSize: '0.7rem' }}>{part.category || 'Senior'}</span>
-                                                            {team && <span className="badge badge-gray text-xs">{team.name}</span>}
-                                                        </label>
-                                                    );
-                                                });
-                                            })()}
+                                                })}
+                                            </div>
                                         </div>
-                                    </div>
+                                    ) : (
+                                        <div className="form-group">
+                                            <div className="flex just-b items-c mb-2">
+                                                <label className="form-label" style={{ margin: 0 }}>
+                                                    Select Participating Students ({selectedParticipantIdsForEvent.length} selected)
+                                                </label>
+                                                <div className="flex gap-2">
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost btn-sm text-xs"
+                                                        style={{ color: 'var(--primary)', fontWeight: 600 }}
+                                                        onClick={() => {
+                                                            const activeCat = eventCategoryFilter === 'all' ? newEventCategory : eventCategoryFilter;
+                                                            const catPartIds = participants
+                                                                .filter(p => (p.category || 'Senior') === activeCat)
+                                                                .map(p => p.id);
+                                                            
+                                                            const allSelected = catPartIds.length > 0 && catPartIds.every(id => selectedParticipantIdsForEvent.includes(id));
+                                                            if (allSelected) {
+                                                                setSelectedParticipantIdsForEvent(prev => prev.filter(id => !catPartIds.includes(id)));
+                                                            } else {
+                                                                setSelectedParticipantIdsForEvent(prev => [...new Set([...prev, ...catPartIds])]);
+                                                            }
+                                                        }}
+                                                    >
+                                                        ⚡ Select All {eventCategoryFilter === 'all' ? newEventCategory : eventCategoryFilter}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost btn-sm text-xs"
+                                                        onClick={() => {
+                                                            if (selectedParticipantIdsForEvent.length === participants.length) {
+                                                                setSelectedParticipantIdsForEvent([]);
+                                                            } else {
+                                                                setSelectedParticipantIdsForEvent(participants.map(p => p.id));
+                                                            }
+                                                        }}
+                                                    >
+                                                        {selectedParticipantIdsForEvent.length === participants.length ? 'Deselect All' : 'Select All'}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {/* Category Filter Pills */}
+                                            <div className="flex gap-1 mb-2" style={{ flexWrap: 'wrap' }}>
+                                                {['all', newEventCategory, 'Kiddies', 'Sub Junior', 'Junior', 'Senior', 'Super Senior', 'General']
+                                                    .filter((val, index, self) => self.indexOf(val) === index)
+                                                    .map((cat) => (
+                                                        <button
+                                                            key={cat}
+                                                            type="button"
+                                                            className={`btn btn-sm ${eventCategoryFilter === cat ? 'btn-primary' : 'btn-ghost'}`}
+                                                            style={{ padding: '2px 8px', fontSize: '0.72rem' }}
+                                                            onClick={() => setEventCategoryFilter(cat)}
+                                                        >
+                                                            {cat === 'all' ? 'All' : cat === newEventCategory ? `⭐ ${cat}` : cat}
+                                                        </button>
+                                                    ))}
+                                            </div>
+
+                                            <input
+                                                type="text"
+                                                className="input input-sm mb-2"
+                                                placeholder="Search student name, chest #..."
+                                                value={eventParticipantSearch}
+                                                onChange={(e) => setEventParticipantSearch(e.target.value)}
+                                            />
+
+                                            <div style={{
+                                                border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
+                                                maxHeight: 200, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 6
+                                            }}>
+                                                {participants.length === 0 ? (
+                                                    <p className="text-xs col-muted p-2">No registered participants. Register participants first.</p>
+                                                ) : (() => {
+                                                    const filteredParts = participants.filter(p => {
+                                                        const matchesSearch = p.name.toLowerCase().includes(eventParticipantSearch.toLowerCase()) || p.chest_number.toLowerCase().includes(eventParticipantSearch.toLowerCase());
+                                                        const partCat = p.category || 'Senior';
+                                                        const matchesCat = eventCategoryFilter === 'all' ? true : partCat === eventCategoryFilter;
+                                                        return matchesSearch && matchesCat;
+                                                    });
+
+                                                    if (filteredParts.length === 0) {
+                                                        return (
+                                                            <div className="p-3 text-center">
+                                                                <p className="text-xs col-muted" style={{ margin: 0 }}>
+                                                                    No participants registered in category <strong>"{eventCategoryFilter}"</strong>.
+                                                                </p>
+                                                                {eventCategoryFilter !== 'all' && (
+                                                                    <button
+                                                                        type="button"
+                                                                        className="btn btn-ghost btn-sm text-xs mt-1"
+                                                                        style={{ color: 'var(--primary)', fontWeight: 600 }}
+                                                                        onClick={() => setEventCategoryFilter('all')}
+                                                                    >
+                                                                        Show All Participants
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    }
+
+                                                    return filteredParts.map((part) => {
+                                                        const isChecked = selectedParticipantIdsForEvent.includes(part.id);
+                                                        const team = teams.find(t => t.id === part.team_id);
+                                                        return (
+                                                            <label key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', cursor: 'pointer', borderRadius: 4, background: isChecked ? 'var(--primary-light)' : 'transparent' }}>
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={isChecked}
+                                                                    onChange={(e) => {
+                                                                        if (e.target.checked) {
+                                                                            setSelectedParticipantIdsForEvent(prev => [...prev, part.id]);
+                                                                        } else {
+                                                                            setSelectedParticipantIdsForEvent(prev => prev.filter(id => id !== part.id));
+                                                                        }
+                                                                    }}
+                                                                />
+                                                                <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{part.name}</span>
+                                                                <span className="room-code text-xs">{part.chest_number}</span>
+                                                                <span className="badge badge-purple text-xs" style={{ padding: '1px 6px', fontSize: '0.7rem' }}>{part.category || 'Senior'}</span>
+                                                                {team && <span className="badge badge-gray text-xs">{team.name}</span>}
+                                                            </label>
+                                                        );
+                                                    });
+                                                })()}
+                                            </div>
+                                        </div>
+                                    )}
 
                                     <div className="flex gap-3 mt-3">
                                         <button type="button" className="btn btn-secondary flex-1" onClick={() => setShowCreateEventModal(false)}>Cancel</button>
                                         <button type="submit" className="btn btn-primary flex-1" disabled={creatingEvent}>
                                             {creatingEvent ? 'Creating Event...' : 'Create Event'}
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+
+            {/* Admin Edit Event Modal */}
+            <AnimatePresence>
+                {editingEvent && (
+                    <div className="sidebar-overlay" style={{ zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+                        <motion.div
+                            className="card"
+                            style={{ maxWidth: 540, width: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}
+                            initial={{ scale: 0.9, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.9, opacity: 0 }}
+                        >
+                            <div className="card-header flex just-b items-c">
+                                <h3>✏️ Edit Event: {editingEvent.event_name}</h3>
+                                <button className="btn btn-ghost btn-sm" onClick={() => setEditingEvent(null)}>✕</button>
+                            </div>
+                            <div className="card-body" style={{ overflowY: 'auto' }}>
+                                <form onSubmit={handleSaveEditEvent} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                                    <div className="form-group">
+                                        <label className="form-label">Event Type</label>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                                            <button
+                                                type="button"
+                                                className={`btn ${editEventType === 'solo' ? 'btn-primary' : 'btn-ghost'}`}
+                                                style={{
+                                                    border: editEventType === 'solo' ? '2px solid var(--primary)' : '1px solid var(--border)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    gap: 8,
+                                                    padding: '10px 14px',
+                                                    fontWeight: 600
+                                                }}
+                                                onClick={() => setEditEventType('solo')}
+                                            >
+                                                👤 Solo Event
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className={`btn ${editEventType === 'group' ? 'btn-primary' : 'btn-ghost'}`}
+                                                style={{
+                                                    border: editEventType === 'group' ? '2px solid var(--primary)' : '1px solid var(--border)',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    gap: 8,
+                                                    padding: '10px 14px',
+                                                    fontWeight: 600
+                                                }}
+                                                onClick={() => setEditEventType('group')}
+                                            >
+                                                👥 Group Event
+                                            </button>
+                                        </div>
+                                        <p className="text-xs col-muted mt-1">
+                                            {editEventType === 'solo'
+                                                ? '👤 Solo: Points count for both Solo & Team Championship.'
+                                                : '👥 Group: Points count EXCLUSIVELY for Team Championship (10+5 pts).'}
+                                        </p>
+                                    </div>
+
+                                    <div className="form-group">
+                                        <label className="form-label">Event Name</label>
+                                        <input
+                                            type="text"
+                                            className="input"
+                                            placeholder="e.g. Qur'an Recitation Senior"
+                                            value={editEventName}
+                                            onChange={(e) => setEditEventName(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+
+                                    <div className="form-group">
+                                        <label className="form-label">Category</label>
+                                        <select
+                                            className="select"
+                                            value={editEventCategory}
+                                            onChange={(e) => {
+                                                const cat = e.target.value;
+                                                setEditEventCategory(cat);
+                                                if (cat !== 'Other') {
+                                                    setEditEventCategoryFilter(cat);
+                                                }
+                                            }}
+                                        >
+                                            <option value="Kiddies">Kiddies</option>
+                                            <option value="Sub Junior">Sub Junior</option>
+                                            <option value="Junior">Junior</option>
+                                            <option value="Senior">Senior</option>
+                                            <option value="Super Senior">Super Senior</option>
+                                            <option value="General">General</option>
+                                            <option value="Other">Other Category...</option>
+                                        </select>
+                                    </div>
+
+                                    {editEventCategory === 'Other' && (
+                                        <div className="form-group">
+                                            <label className="form-label">Custom Category Name</label>
+                                            <input
+                                                type="text"
+                                                className="input"
+                                                placeholder="e.g. Calligraphy"
+                                                value={editEventCustomCategory}
+                                                onChange={(e) => setEditEventCustomCategory(e.target.value)}
+                                                required
+                                            />
+                                        </div>
+                                    )}
+
+                                     {editEventType === 'group' ? (
+                                        <div className="form-group" style={{ background: '#F8FAFC', padding: 14, borderRadius: 8, border: '1px solid var(--border)' }}>
+                                            <div className="flex just-b items-c mb-3">
+                                                <div>
+                                                    <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700 }}>
+                                                        👥 Competing Teams ({editGroupTeams.length} Teams)
+                                                    </h4>
+                                                    <p className="text-xs col-muted style-normal" style={{ margin: '2px 0 0 0' }}>
+                                                        Assign participants team-wise. Each team competes as a single group unit.
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-secondary btn-sm"
+                                                    onClick={() => {
+                                                        setEditGroupTeams(prev => [
+                                                            ...prev,
+                                                            { id: `gt-${Date.now()}`, name: `Team ${prev.length + 1}`, participantIds: [] }
+                                                        ]);
+                                                    }}
+                                                >
+                                                    ➕ Add Team
+                                                </button>
+                                            </div>
+
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                                {editGroupTeams.map((gt, tIdx) => {
+                                                    const assignedElsewhere = editGroupTeams
+                                                        .filter((_, idx) => idx !== tIdx)
+                                                        .flatMap(t => t.participantIds);
+
+                                                    const availableForTeam = participants.filter(p => !assignedElsewhere.includes(p.id));
+
+                                                    return (
+                                                        <div key={gt.id} style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
+                                                            <div className="flex just-b items-c mb-2">
+                                                                <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--primary)' }}>
+                                                                    🚩 {gt.name || `Team ${tIdx + 1}`} (Code {tIdx + 1})
+                                                                </span>
+                                                                {editGroupTeams.length > 2 && (
+                                                                    <button
+                                                                        type="button"
+                                                                        className="btn btn-ghost btn-sm text-danger text-xs"
+                                                                        onClick={() => {
+                                                                            setEditGroupTeams(prev => prev.filter((_, idx) => idx !== tIdx));
+                                                                        }}
+                                                                    >
+                                                                        🗑️ Remove Team
+                                                                    </button>
+                                                                )}
+                                                            </div>
+
+                                                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10, minHeight: 28, alignItems: 'center' }}>
+                                                                {gt.participantIds.length === 0 ? (
+                                                                    <span className="text-xs col-muted italic">No students assigned to this team yet.</span>
+                                                                ) : (
+                                                                    gt.participantIds.map(pId => {
+                                                                        const part = participants.find(p => p.id === pId);
+                                                                        if (!part) return null;
+                                                                        const teamObj = teams.find(t => t.id === part.team_id);
+                                                                        return (
+                                                                            <span key={pId} className="badge badge-purple" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 8px', fontSize: '0.78rem' }}>
+                                                                                <span><strong>{part.name}</strong> ({part.chest_number})</span>
+                                                                                {teamObj && <span style={{ opacity: 0.8, fontSize: '0.7rem' }}>[{teamObj.name}]</span>}
+                                                                                <button
+                                                                                    type="button"
+                                                                                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'inherit', fontWeight: 'bold', marginLeft: 2 }}
+                                                                                    onClick={() => {
+                                                                                        setEditGroupTeams(prev => prev.map((t, idx) => idx === tIdx ? { ...t, participantIds: t.participantIds.filter(id => id !== pId) } : t));
+                                                                                    }}
+                                                                                >
+                                                                                    ✕
+                                                                                </button>
+                                                                            </span>
+                                                                        );
+                                                                    })
+                                                                )}
+                                                            </div>
+
+                                                            <div className="flex gap-2 items-c">
+                                                                <select
+                                                                    className="select select-sm flex-1"
+                                                                    defaultValue=""
+                                                                    onChange={(e) => {
+                                                                        const selectedId = e.target.value;
+                                                                        if (!selectedId) return;
+                                                                        if (!gt.participantIds.includes(selectedId)) {
+                                                                            setEditGroupTeams(prev => prev.map((t, idx) => idx === tIdx ? { ...t, participantIds: [...t.participantIds, selectedId] } : t));
+                                                                        }
+                                                                        e.target.value = "";
+                                                                    }}
+                                                                >
+                                                                    <option value="">➕ Add Student to {gt.name || `Team ${tIdx + 1}`}...</option>
+                                                                    {availableForTeam
+                                                                        .filter(p => !gt.participantIds.includes(p.id))
+                                                                        .map(p => {
+                                                                            const pTeam = teams.find(t => t.id === p.team_id);
+                                                                            return (
+                                                                                <option key={p.id} value={p.id}>
+                                                                                    {p.name} (Chest: {p.chest_number}) - {p.category || 'Senior'} {pTeam ? `[${pTeam.name}]` : ''}
+                                                                                </option>
+                                                                            );
+                                                                        })}
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="form-group">
+                                            <div className="flex just-b items-c mb-2">
+                                                <label className="form-label" style={{ margin: 0 }}>
+                                                    Select Participating Students ({editEventParticipantIds.length} selected)
+                                                </label>
+                                                <div className="flex gap-2">
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost btn-sm text-xs"
+                                                        style={{ color: 'var(--primary)', fontWeight: 600 }}
+                                                        onClick={() => {
+                                                            const activeCat = editEventCategoryFilter === 'all' ? editEventCategory : editEventCategoryFilter;
+                                                            const catPartIds = participants
+                                                                .filter(p => (p.category || 'Senior') === activeCat)
+                                                                .map(p => p.id);
+
+                                                            const allSelected = catPartIds.length > 0 && catPartIds.every(id => editEventParticipantIds.includes(id));
+                                                            if (allSelected) {
+                                                                setEditEventParticipantIds(prev => prev.filter(id => !catPartIds.includes(id)));
+                                                            } else {
+                                                                setEditEventParticipantIds(prev => [...new Set([...prev, ...catPartIds])]);
+                                                            }
+                                                        }}
+                                                    >
+                                                        ⚡ Select All {editEventCategoryFilter === 'all' ? editEventCategory : editEventCategoryFilter}
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost btn-sm text-xs"
+                                                        onClick={() => {
+                                                            if (editEventParticipantIds.length === participants.length) {
+                                                                setEditEventParticipantIds([]);
+                                                            } else {
+                                                                setEditEventParticipantIds(participants.map(p => p.id));
+                                                            }
+                                                        }}
+                                                    >
+                                                        {editEventParticipantIds.length === participants.length ? 'Deselect All' : 'Select All'}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {/* Category Filter Pills */}
+                                            <div className="flex gap-1 mb-2" style={{ flexWrap: 'wrap' }}>
+                                                {['all', editEventCategory, 'Kiddies', 'Sub Junior', 'Junior', 'Senior', 'Super Senior', 'General']
+                                                    .filter((val, index, self) => self.indexOf(val) === index)
+                                                    .map((cat) => (
+                                                        <button
+                                                            key={cat}
+                                                            type="button"
+                                                            className={`btn btn-sm ${editEventCategoryFilter === cat ? 'btn-primary' : 'btn-ghost'}`}
+                                                            style={{ padding: '2px 8px', fontSize: '0.72rem' }}
+                                                            onClick={() => setEditEventCategoryFilter(cat)}
+                                                        >
+                                                            {cat === 'all' ? 'All' : cat === editEventCategory ? `⭐ ${cat}` : cat}
+                                                        </button>
+                                                    ))}
+                                            </div>
+
+                                            <input
+                                                type="text"
+                                                className="input input-sm mb-2"
+                                                placeholder="Search student name, chest #..."
+                                                value={editEventParticipantSearch}
+                                                onChange={(e) => setEditEventParticipantSearch(e.target.value)}
+                                            />
+
+                                            <div style={{
+                                                border: '1px solid var(--border)', borderRadius: 'var(--r-sm)',
+                                                maxHeight: 200, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 6
+                                            }}>
+                                                {participants.length === 0 ? (
+                                                    <p className="text-xs col-muted p-2">No registered participants.</p>
+                                                ) : (() => {
+                                                    const filteredParts = participants.filter(p => {
+                                                        const matchesSearch = p.name.toLowerCase().includes(editEventParticipantSearch.toLowerCase()) || p.chest_number.toLowerCase().includes(editEventParticipantSearch.toLowerCase());
+                                                        const partCat = p.category || 'Senior';
+                                                        const matchesCat = editEventCategoryFilter === 'all' ? true : partCat === editEventCategoryFilter;
+                                                        return matchesSearch && matchesCat;
+                                                    });
+
+                                                    if (filteredParts.length === 0) {
+                                                        return (
+                                                            <div className="p-3 text-center">
+                                                                <p className="text-xs col-muted" style={{ margin: 0 }}>
+                                                                    No participants registered in category <strong>"{editEventCategoryFilter}"</strong>.
+                                                                </p>
+                                                            </div>
+                                                        );
+                                                    }
+
+                                                    return filteredParts.map((part) => {
+                                                        const isChecked = editEventParticipantIds.includes(part.id);
+                                                        const team = teams.find(t => t.id === part.team_id);
+                                                        return (
+                                                            <label key={part.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px', cursor: 'pointer', borderRadius: 4, background: isChecked ? 'var(--primary-light)' : 'transparent' }}>
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={isChecked}
+                                                                    onChange={(e) => {
+                                                                        if (e.target.checked) {
+                                                                            setEditEventParticipantIds(prev => [...prev, part.id]);
+                                                                        } else {
+                                                                            setEditEventParticipantIds(prev => prev.filter(id => id !== part.id));
+                                                                        }
+                                                                    }}
+                                                                />
+                                                                <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{part.name}</span>
+                                                                <span className="room-code text-xs">{part.chest_number}</span>
+                                                                <span className="badge badge-purple text-xs" style={{ padding: '1px 6px', fontSize: '0.7rem' }}>{part.category || 'Senior'}</span>
+                                                                {team && <span className="badge badge-gray text-xs">{team.name}</span>}
+                                                            </label>
+                                                        );
+                                                    });
+                                                })()}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <div className="flex gap-3 mt-3">
+                                        <button type="button" className="btn btn-secondary flex-1" onClick={() => setEditingEvent(null)}>Cancel</button>
+                                        <button type="submit" className="btn btn-primary flex-1" disabled={savingEdit}>
+                                            {savingEdit ? 'Saving Changes...' : 'Save Changes'}
                                         </button>
                                     </div>
                                 </form>
@@ -2620,6 +3674,7 @@ export default function AdminPage() {
                                             <thead>
                                                 <tr>
                                                     <th>Event Name</th>
+                                                    <th>Type</th>
                                                     <th>Category</th>
                                                     <th>Room</th>
                                                     <th>Avg Score</th>
@@ -2632,7 +3687,7 @@ export default function AdminPage() {
                                             <tbody>
                                                 {ach.eventsList.length === 0 ? (
                                                     <tr>
-                                                        <td colSpan={8}>
+                                                        <td colSpan={9}>
                                                             <div className="empty-state"><p>No score records found for this participant yet.</p></div>
                                                         </td>
                                                     </tr>
@@ -2640,6 +3695,11 @@ export default function AdminPage() {
                                                     ach.eventsList.map((ev) => (
                                                         <tr key={ev.eventId}>
                                                             <td><strong>{ev.eventName}</strong></td>
+                                                            <td>
+                                                                <span className={`badge ${ev.eventType === 'group' ? 'badge-purple' : 'badge-blue'}`} style={{ fontSize: '0.7rem' }}>
+                                                                    {ev.eventType === 'group' ? '👥 Group' : '👤 Solo'}
+                                                                </span>
+                                                            </td>
                                                             <td><span className="badge badge-gray">{ev.category}</span></td>
                                                             <td><span className="room-code" style={{ fontSize: '0.75rem' }}>{ev.roomCode}</span></td>
                                                             <td><strong>{ev.avgScore}</strong></td>
@@ -2650,7 +3710,10 @@ export default function AdminPage() {
                                                             </td>
                                                             <td>#{ev.rank}</td>
                                                             <td><strong>{ev.prize}</strong></td>
-                                                            <td><strong style={{ color: 'var(--primary)' }}>+{ev.points} pts</strong></td>
+                                                            <td>
+                                                                <strong style={{ color: 'var(--primary)' }}>+{ev.points} pts</strong>
+                                                                {ev.eventType === 'group' && <span className="text-xs col-muted" style={{ display: 'block', fontSize: '0.68rem' }}>(Team Only)</span>}
+                                                            </td>
                                                         </tr>
                                                     ))
                                                 )}
@@ -2813,9 +3876,12 @@ function EventScoreCard({
             transition={{ duration: 0.35 }}>
             <div className="card-header">
                 <div>
-                    <h3 style={{ marginBottom: 3, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <h3 style={{ marginBottom: 3, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                         {event.event_name}
                         {event.category && <span className="badge badge-gray" style={{ fontSize: '0.7rem', padding: '2px 6px' }}>{event.category}</span>}
+                        <span className={`badge ${event.event_type === 'group' ? 'badge-purple' : 'badge-blue'}`} style={{ fontSize: '0.7rem', padding: '2px 6px', fontWeight: 600 }}>
+                            {event.event_type === 'group' ? '👥 Group Event' : '👤 Solo Event'}
+                        </span>
                     </h3>
                     <p className="text-xs col-muted">
                         {event.participant_count} participants · {event.scores.length} score entries · by {event.created_by}
