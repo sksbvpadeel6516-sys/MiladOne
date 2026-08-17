@@ -688,7 +688,7 @@ export default function AdminPage() {
     };
 
     // Open Edit Event Modal
-    const openEditEventModal = (ev: Event) => {
+    const openEditEventModal = async (ev: Event) => {
         setEditingEvent(ev);
         setEditEventName(ev.event_name);
         const stdCategories = ['Kiddies', 'Sub Junior', 'Junior', 'Senior', 'Super Senior', 'General'];
@@ -702,33 +702,73 @@ export default function AdminPage() {
         const evType = (ev.event_type as 'solo' | 'group') || 'solo';
         setEditEventType(evType);
 
-        const eventMaps = mappings.filter(m => m.event_id === ev.id);
+        // Fetch fresh mappings for this event to avoid stale state issues
+        const { data: freshMappings } = await supabase
+            .from('event_participant_mappings')
+            .select('*')
+            .eq('event_id', ev.id);
+
+        const eventMaps = freshMappings && freshMappings.length > 0
+            ? freshMappings
+            : mappings.filter(m => m.event_id === ev.id);
+
         setEditEventParticipantIds(eventMaps.map(m => m.participant_id));
 
         if (evType === 'group') {
             const teamMap = new Map<number, string[]>();
+            const unnumberedPartIds: string[] = [];
+
             eventMaps.forEach(m => {
-                const num = m.participant_number || 1;
-                if (!teamMap.has(num)) teamMap.set(num, []);
-                teamMap.get(num)!.push(m.participant_id);
+                if (m.participant_number !== null && m.participant_number !== undefined) {
+                    if (!teamMap.has(m.participant_number)) teamMap.set(m.participant_number, []);
+                    teamMap.get(m.participant_number)!.push(m.participant_id);
+                } else {
+                    unnumberedPartIds.push(m.participant_id);
+                }
             });
 
             const parsedTeams: { id: string; name: string; participantIds: string[] }[] = [];
             const sortedNums = Array.from(teamMap.keys()).sort((a, b) => a - b);
-            if (sortedNums.length === 0) {
+            
+            sortedNums.forEach((num, idx) => {
+                parsedTeams.push({
+                    id: `gt-${num}`,
+                    name: `Team ${idx + 1}`,
+                    participantIds: teamMap.get(num) || []
+                });
+            });
+
+            // Group unnumbered participants by their institution team_id
+            if (unnumberedPartIds.length > 0) {
+                const teamGroupMap = new Map<string, string[]>();
+                unnumberedPartIds.forEach(pId => {
+                    const part = participants.find(p => p.id === pId);
+                    const tId = part?.team_id || 'unassigned';
+                    if (!teamGroupMap.has(tId)) teamGroupMap.set(tId, []);
+                    teamGroupMap.get(tId)!.push(pId);
+                });
+
+                teamGroupMap.forEach((pIds) => {
+                    const nextNum = parsedTeams.length + 1;
+                    parsedTeams.push({
+                        id: `gt-new-${Date.now()}-${nextNum}`,
+                        name: `Team ${nextNum}`,
+                        participantIds: pIds
+                    });
+                });
+            }
+
+            if (parsedTeams.length === 0) {
                 parsedTeams.push(
                     { id: 'gt-1', name: 'Team 1', participantIds: [] },
                     { id: 'gt-2', name: 'Team 2', participantIds: [] }
                 );
-            } else {
-                sortedNums.forEach((num, idx) => {
-                    parsedTeams.push({
-                        id: `gt-${num}`,
-                        name: `Team ${idx + 1}`,
-                        participantIds: teamMap.get(num) || []
-                    });
-                });
+            } else if (parsedTeams.length === 1) {
+                parsedTeams.push(
+                    { id: `gt-${parsedTeams.length + 1}`, name: `Team ${parsedTeams.length + 1}`, participantIds: [] }
+                );
             }
+
             setEditGroupTeams(parsedTeams);
         } else {
             setEditGroupTeams([
@@ -772,6 +812,21 @@ export default function AdminPage() {
             const activeTeams = editGroupTeams.filter(t => t.participantIds.length > 0);
             const participantCount = isGroup ? activeTeams.length : editEventParticipantIds.length;
 
+            // Fetch existing mappings to preserve participant_number for participants already assigned codes
+            const { data: existingMappings } = await supabase
+                .from('event_participant_mappings')
+                .select('participant_id, participant_number')
+                .eq('event_id', editingEvent.id);
+
+            const existingCodeMap = new Map<string, number | null>();
+            if (existingMappings) {
+                existingMappings.forEach(m => {
+                    if (m.participant_number !== null && m.participant_number !== undefined) {
+                        existingCodeMap.set(m.participant_id, m.participant_number);
+                    }
+                });
+            }
+
             // Update event record
             const { error: evErr } = await supabase
                 .from('events')
@@ -779,7 +834,7 @@ export default function AdminPage() {
                     event_name: editEventName.trim(),
                     category,
                     event_type: editEventType,
-                    participant_count: participantCount,
+                    participant_count: Math.max(1, participantCount),
                 })
                 .eq('id', editingEvent.id);
 
@@ -807,7 +862,7 @@ export default function AdminPage() {
             } else {
                 newMappings = editEventParticipantIds.map(partId => ({
                     event_id: editingEvent.id,
-                    participant_number: null,
+                    participant_number: existingCodeMap.has(partId) ? existingCodeMap.get(partId)! : null,
                     participant_id: partId,
                 }));
             }
@@ -822,8 +877,12 @@ export default function AdminPage() {
 
             showToast(`Event "${editEventName.trim()}" updated successfully!`, 'success');
             setEditingEvent(null);
-            loadRooms(institutionId);
-            loadTeamsAndParticipants(institutionId);
+            if (institutionId) {
+                await Promise.all([
+                    loadRooms(institutionId),
+                    loadTeamsAndParticipants(institutionId)
+                ]);
+            }
         } catch (err: unknown) {
             showToast(err instanceof Error ? err.message : 'Failed to update event', 'error');
         } finally {
@@ -855,10 +914,10 @@ export default function AdminPage() {
         const codeNum = parseCodeInputToNum(rawInput);
         try {
             if (codeNum !== null) {
-                // Remove existing mapping for this code number in this event (prevents duplicate code numbers)
+                // Set participant_number to null for any other participant in this event who currently has codeNum (prevents duplicate codes without deleting participant from event)
                 await supabase
                     .from('event_participant_mappings')
-                    .delete()
+                    .update({ participant_number: null })
                     .eq('event_id', eventId)
                     .eq('participant_number', codeNum);
 
@@ -882,7 +941,6 @@ export default function AdminPage() {
                     .eq('participant_id', participantId);
 
                 if (error) {
-                    // Fallback to updating or keeping row with null
                     await supabase
                         .from('event_participant_mappings')
                         .upsert({
@@ -909,9 +967,10 @@ export default function AdminPage() {
         const codeNum = parseCodeInputToNum(rawInput);
         try {
             if (codeNum !== null) {
+                // Set participant_number to null for any other participants in this event who currently have codeNum
                 await supabase
                     .from('event_participant_mappings')
-                    .delete()
+                    .update({ participant_number: null })
                     .eq('event_id', eventId)
                     .eq('participant_number', codeNum);
 
@@ -938,7 +997,7 @@ export default function AdminPage() {
                 }
             }
 
-            if (institutionId) loadRooms(institutionId);
+            if (institutionId) { loadRooms(institutionId); loadTeamsAndParticipants(institutionId); }
         } catch (err: any) {
             showToast(err?.message || 'Failed to save team code', 'error');
         }
