@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { supabase } from '@/lib/supabase';
@@ -102,6 +103,8 @@ export default function AdminPage() {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [confirmDeleteRoom, setConfirmDeleteRoom] = useState<string | null>(null);
     const [confirmRemoveJudge, setConfirmRemoveJudge] = useState<{ roomId: string; judgeId: string; email: string } | null>(null);
+    const [printMode, setPrintMode] = useState<'none' | 'single' | 'all'>('none');
+    const [printSingleEvent, setPrintSingleEvent] = useState<EventWithScores | null>(null);
     const roomsRef = useRef<RoomWithDetails[]>([]);
     roomsRef.current = rooms;
 
@@ -614,6 +617,19 @@ export default function AdminPage() {
                 showToast('Please add members to at least 2 competing teams for a Group Event.', 'error');
                 return;
             }
+            for (const gt of teamsWithMembers) {
+                if (gt.participantIds.length > 1) {
+                    const teamIds = new Set(
+                        gt.participantIds
+                            .map(id => participants.find(p => p.id === id)?.team_id)
+                            .filter(Boolean)
+                    );
+                    if (teamIds.size > 1) {
+                        showToast(`All participants in "${gt.name || 'a group team'}" must belong to the same team.`, 'error');
+                        return;
+                    }
+                }
+            }
         }
 
         setCreatingEvent(true);
@@ -804,6 +820,19 @@ export default function AdminPage() {
             if (teamsWithMembers.length < 2) {
                 showToast('Please assign members to at least 2 competing teams for a Group Event.', 'error');
                 return;
+            }
+            for (const gt of teamsWithMembers) {
+                if (gt.participantIds.length > 1) {
+                    const teamIds = new Set(
+                        gt.participantIds
+                            .map(id => participants.find(p => p.id === id)?.team_id)
+                            .filter(Boolean)
+                    );
+                    if (teamIds.size > 1) {
+                        showToast(`All participants in "${gt.name || 'a group team'}" must belong to the same team.`, 'error');
+                        return;
+                    }
+                }
             }
         }
 
@@ -2948,6 +2977,21 @@ export default function AdminPage() {
                                                 </div>
                                             ) : (
                                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'white', padding: '14px 18px', borderRadius: '12px', border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)' }}>
+                                                        <div>
+                                                            <h4 style={{ margin: 0, fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>📊 Live Event Results & Reports</h4>
+                                                            <p className="text-xs col-muted" style={{ margin: 0 }}>Print complete winner lists for all completed events at once</p>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            className="btn btn-primary btn-sm"
+                                                            onClick={() => setPrintMode('all')}
+                                                            disabled={selectedRoom.events.every(e => e.scores.length === 0)}
+                                                            style={{ fontWeight: 700, padding: '8px 14px' }}
+                                                        >
+                                                            🖨️ Print All Events Winner List
+                                                        </button>
+                                                    </div>
                                                     {selectedRoom.events.map((ev) => (
                                                         <EventScoreCard
                                                             key={ev.id}
@@ -2956,6 +3000,10 @@ export default function AdminPage() {
                                                             participants={participants}
                                                             teams={teams}
                                                             mappings={mappings}
+                                                            onPrintEvent={(evToPrint) => {
+                                                                setPrintSingleEvent(evToPrint);
+                                                                setPrintMode('single');
+                                                            }}
                                                         />
                                                     ))}
                                                 </div>
@@ -2970,6 +3018,19 @@ export default function AdminPage() {
                     <Footer />
                 </main>
             </div>
+
+            {printMode !== 'none' && selectedRoom && (
+                <PrintWinnersPortal
+                    mode={printMode}
+                    singleEvent={printSingleEvent}
+                    room={selectedRoom}
+                    institutionName={institutionName}
+                    participants={participants}
+                    teams={teams}
+                    mappings={mappings}
+                    onClose={() => { setPrintMode('none'); setPrintSingleEvent(null); }}
+                />
+            )}
 
             {/* Toasts */}
             <div className="toast-container">
@@ -3129,19 +3190,34 @@ export default function AdminPage() {
                                                 </button>
                                             </div>
 
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                                                 {createGroupTeams.map((gt, tIdx) => {
                                                     const assignedElsewhere = createGroupTeams
                                                         .filter((_, idx) => idx !== tIdx)
                                                         .flatMap(t => t.participantIds);
 
-                                                    const availableForTeam = participants.filter(p => !assignedElsewhere.includes(p.id));
+                                                    // Lock to the institution team of the first assigned participant
+                                                    const firstPartId = gt.participantIds[0];
+                                                    const firstPart = firstPartId ? participants.find(p => p.id === firstPartId) : null;
+                                                    const lockedTeamId = firstPart ? firstPart.team_id : null;
+                                                    const lockedTeamObj = lockedTeamId ? teams.find(t => t.id === lockedTeamId) : null;
+
+                                                    const availableForTeam = participants.filter(p => {
+                                                        if (assignedElsewhere.includes(p.id)) return false;
+                                                        if (lockedTeamId && p.team_id !== lockedTeamId) return false;
+                                                        return true;
+                                                    });
 
                                                     return (
                                                         <div key={gt.id} style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
                                                             <div className="flex just-b items-c mb-2">
                                                                 <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--primary)' }}>
                                                                     🚩 {gt.name || `Team ${tIdx + 1}`} (Code {tIdx + 1})
+                                                                    {lockedTeamObj && (
+                                                                        <span className="badge badge-yellow text-xs" style={{ marginLeft: 8 }}>
+                                                                            Team: {lockedTeamObj.name}
+                                                                        </span>
+                                                                    )}
                                                                 </span>
                                                                 {createGroupTeams.length > 2 && (
                                                                     <button
@@ -3196,7 +3272,11 @@ export default function AdminPage() {
                                                                         e.target.value = "";
                                                                     }}
                                                                 >
-                                                                    <option value="">➕ Add Student to {gt.name || `Team ${tIdx + 1}`}...</option>
+                                                                    <option value="">
+                                                                        {lockedTeamObj
+                                                                            ? `➕ Add Student from ${lockedTeamObj.name}...`
+                                                                            : `➕ Add Student to ${gt.name || `Team ${tIdx + 1}`}...`}
+                                                                    </option>
                                                                     {availableForTeam
                                                                         .filter(p => !gt.participantIds.includes(p.id))
                                                                         .map(p => {
@@ -3497,13 +3577,28 @@ export default function AdminPage() {
                                                         .filter((_, idx) => idx !== tIdx)
                                                         .flatMap(t => t.participantIds);
 
-                                                    const availableForTeam = participants.filter(p => !assignedElsewhere.includes(p.id));
+                                                    // Lock to the institution team of the first assigned participant
+                                                    const firstPartId = gt.participantIds[0];
+                                                    const firstPart = firstPartId ? participants.find(p => p.id === firstPartId) : null;
+                                                    const lockedTeamId = firstPart ? firstPart.team_id : null;
+                                                    const lockedTeamObj = lockedTeamId ? teams.find(t => t.id === lockedTeamId) : null;
+
+                                                    const availableForTeam = participants.filter(p => {
+                                                        if (assignedElsewhere.includes(p.id)) return false;
+                                                        if (lockedTeamId && p.team_id !== lockedTeamId) return false;
+                                                        return true;
+                                                    });
 
                                                     return (
                                                         <div key={gt.id} style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
                                                             <div className="flex just-b items-c mb-2">
                                                                 <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--primary)' }}>
                                                                     🚩 {gt.name || `Team ${tIdx + 1}`} (Code {tIdx + 1})
+                                                                    {lockedTeamObj && (
+                                                                        <span className="badge badge-yellow text-xs" style={{ marginLeft: 8 }}>
+                                                                            Team: {lockedTeamObj.name}
+                                                                        </span>
+                                                                    )}
                                                                 </span>
                                                                 {editGroupTeams.length > 2 && (
                                                                     <button
@@ -3558,7 +3653,11 @@ export default function AdminPage() {
                                                                         e.target.value = "";
                                                                     }}
                                                                 >
-                                                                    <option value="">➕ Add Student to {gt.name || `Team ${tIdx + 1}`}...</option>
+                                                                    <option value="">
+                                                                        {lockedTeamObj
+                                                                            ? `➕ Add Student from ${lockedTeamObj.name}...`
+                                                                            : `➕ Add Student to ${gt.name || `Team ${tIdx + 1}`}...`}
+                                                                    </option>
                                                                     {availableForTeam
                                                                         .filter(p => !gt.participantIds.includes(p.id))
                                                                         .map(p => {
@@ -3942,13 +4041,15 @@ function EventScoreCard({
     room,
     participants,
     teams,
-    mappings
+    mappings,
+    onPrintEvent
 }: {
     event: EventWithScores;
     room: RoomWithDetails;
     participants: Participant[];
     teams: Team[];
     mappings: EventParticipantMapping[];
+    onPrintEvent: (ev: EventWithScores) => void;
 }) {
     const nums = Array.from({ length: event.participant_count }, (_, i) => i + 1);
     const judgeEmails = [...new Set(event.scores.map((s) => s.judge_email))];
@@ -3978,7 +4079,19 @@ function EventScoreCard({
                         {event.participant_count} participants · {event.scores.length} score entries · by {event.created_by}
                     </p>
                 </div>
-                <span className="live-badge">LIVE</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    {event.scores.length > 0 && (
+                        <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => onPrintEvent(event)}
+                            style={{ fontWeight: 600, fontSize: '0.78rem' }}
+                        >
+                            🖨️ Print Winner List
+                        </button>
+                    )}
+                    <span className="live-badge">LIVE</span>
+                </div>
             </div>
 
             {event.scores.length === 0 ? (
@@ -4003,15 +4116,32 @@ function EventScoreCard({
                                 <th>Avg</th>
                                 <th>Grade</th>
                                 <th>Total</th>
-                                <th>Score %</th>
+                                <th>Points</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {results.map((row, idx) => {
-                                const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : idx + 1;
-                                const pct = Math.round((row.total / maxScore) * 100);
+                            {(() => {
+                                let currentRank = 1;
+                                let prevTotal = -1;
+                                const rankedResults = results.map((row, idx) => {
+                                    if (row.ps.length > 0) {
+                                        if (prevTotal !== -1 && row.total < prevTotal) {
+                                            currentRank = idx + 1;
+                                        }
+                                        prevTotal = row.total;
+                                    }
+                                    return { ...row, rank: row.ps.length > 0 ? currentRank : 0 };
+                                });
 
+                                return rankedResults.map((row, idx) => {
+                                const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : idx + 1;
                                 const isGroup = event.event_type === 'group';
+
+                                let rankPoints = 0;
+                                if (row.rank === 1) rankPoints = isGroup ? 10 : 5;
+                                else if (row.rank === 2) rankPoints = isGroup ? 5 : 3;
+                                else if (row.rank === 3) rankPoints = isGroup ? 3 : 1;
+
                                 // Try exact participant_number match first
                                 let matchingMappings = mappings.filter(m => m.event_id === event.id && m.participant_number === row.num);
                                 // Fallback: for events where participant_number is null in mappings,
@@ -4049,8 +4179,10 @@ function EventScoreCard({
 
                                 const avgVal = row.ps.length > 0 ? row.total / row.ps.length : null;
                                 let gradeBadge = <span className="col-muted">—</span>;
+                                let gradePoints = 0;
                                 if (avgVal !== null) {
                                     if (avgVal >= 80) {
+                                        gradePoints = 5;
                                         gradeBadge = (
                                             <span style={{
                                                 background: '#ECFDF5', color: '#047857', border: '1px solid #A7F3D0',
@@ -4058,6 +4190,7 @@ function EventScoreCard({
                                             }}>A</span>
                                         );
                                     } else if (avgVal >= 60) {
+                                        gradePoints = 3;
                                         gradeBadge = (
                                             <span style={{
                                                 background: '#FFFBEB', color: '#B45309', border: '1px solid #FDE68A',
@@ -4065,6 +4198,7 @@ function EventScoreCard({
                                             }}>B</span>
                                         );
                                     } else {
+                                        gradePoints = 1;
                                         gradeBadge = (
                                             <span style={{
                                                 background: '#FEF2F2', color: '#B91C1C', border: '1px solid #FCA5A5',
@@ -4073,6 +4207,8 @@ function EventScoreCard({
                                         );
                                     }
                                 }
+
+                                const totalPoints = rankPoints + gradePoints;
 
                                 return (
                                     <tr key={row.num}>
@@ -4155,18 +4291,28 @@ function EventScoreCard({
                                         </td>
                                         <td>
                                             {row.ps.length > 0 ? (
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 80 }}>
-                                                    <div className="progress-track" style={{ flex: 1 }}>
-                                                        <div className={`progress-fill ${idx === 0 ? 'progress-gold' : 'progress-primary'}`}
-                                                            style={{ width: `${pct}%` }} />
-                                                    </div>
-                                                    <span className="text-xs font-700 col-sec">{pct}%</span>
+                                                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                                    <span style={{
+                                                        background: isGroup ? '#F3E8FF' : '#EEF2FF',
+                                                        color: isGroup ? '#6B21A8' : '#3730A3',
+                                                        border: '1px solid ' + (isGroup ? '#D8B4FE' : '#C7D2FE'),
+                                                        padding: '3px 8px',
+                                                        borderRadius: '6px',
+                                                        fontSize: '0.8rem',
+                                                        fontWeight: 700
+                                                    }}>
+                                                        {rankPoints}+{gradePoints}
+                                                    </span>
+                                                    <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--primary)' }}>
+                                                        ({totalPoints} pts)
+                                                    </span>
                                                 </div>
                                             ) : <span className="col-muted">—</span>}
                                         </td>
                                     </tr>
                                 );
-                            })}
+                                });
+                            })()}
                         </tbody>
                     </table>
                 </div>
@@ -4178,5 +4324,240 @@ function EventScoreCard({
                 </div>
             )}
         </motion.div>
+    );
+}
+
+/* ── Print Winners Portal Component (Portal-based for zero blank pages) ── */
+function PrintWinnersPortal({
+    mode,
+    singleEvent,
+    room,
+    institutionName,
+    participants,
+    teams,
+    mappings,
+    onClose
+}: {
+    mode: 'single' | 'all';
+    singleEvent: EventWithScores | null;
+    room: RoomWithDetails;
+    institutionName: string;
+    participants: Participant[];
+    teams: Team[];
+    mappings: EventParticipantMapping[];
+    onClose: () => void;
+}) {
+    const [container, setContainer] = useState<HTMLElement | null>(null);
+
+    useEffect(() => {
+        let el = document.getElementById('print-portal-root');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'print-portal-root';
+            document.body.appendChild(el);
+        }
+        setContainer(el);
+        return () => {
+            if (el && el.parentNode) {
+                el.parentNode.removeChild(el);
+            }
+        };
+    }, []);
+
+    if (!container) return null;
+
+    const eventsToPrint = mode === 'single' && singleEvent
+        ? [singleEvent]
+        : room.events.filter(e => e.scores.length > 0);
+
+    return createPortal(
+        <div className="sidebar-overlay" style={{ zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.75)' }}>
+            <div className="card" style={{ maxWidth: 900, width: '100%', maxHeight: '92vh', display: 'flex', flexDirection: 'column', background: 'white' }}>
+                <div className="card-header no-print flex just-b items-c" style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0', padding: '14px 20px' }}>
+                    <div>
+                        <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>
+                            {mode === 'single' ? `🖨️ Print Winner List — ${singleEvent?.event_name}` : `🖨️ Master Winners List — All Events (${eventsToPrint.length})`}
+                        </h3>
+                        <p className="text-xs col-muted" style={{ margin: 0 }}>Room Code: {room.secret_code}</p>
+                    </div>
+                    <div className="flex gap-2">
+                        <button type="button" className="btn btn-primary btn-sm" onClick={() => window.print()} style={{ fontWeight: 700 }}>
+                            🖨️ Print / Save as PDF
+                        </button>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
+                    </div>
+                </div>
+
+                <div className="card-body" style={{ overflowY: 'auto', padding: 32 }}>
+                    {/* Overall Document Header */}
+                    <div style={{ textAlign: 'center', marginBottom: 24, borderBottom: '3px double #0F172A', paddingBottom: 16 }}>
+                        <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 800, color: '#0F172A', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                            {institutionName ? `${institutionName.toUpperCase()} — MILAD FEST` : 'MILAD SCORING FEST 2026'}
+                        </h1>
+                        <h2 style={{ margin: '4px 0 0 0', fontSize: '1.2rem', fontWeight: 700, color: '#4F46E5' }}>
+                            {mode === 'single' ? `OFFICIAL WINNING LIST — ${singleEvent?.event_name?.toUpperCase()}` : 'MASTER WINNING LIST REPORT'}
+                        </h2>
+                        <p style={{ margin: '4px 0 0 0', fontSize: '0.85rem', color: '#475569', fontWeight: 600 }}>
+                            Room Code: <strong>{room.secret_code}</strong> &nbsp;|&nbsp; Total Events Printed: <strong>{eventsToPrint.length}</strong>
+                        </p>
+                        <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: '#94A3B8' }}>
+                            Generated on: {new Date().toLocaleString()}
+                        </p>
+                    </div>
+
+                    {eventsToPrint.length === 0 ? (
+                        <div style={{ textAlign: 'center', padding: '40px 0', color: '#64748B' }}>
+                            <p>No completed events with scores available to print.</p>
+                        </div>
+                    ) : (
+                        eventsToPrint.map((ev, eventIdx) => {
+                            const nums = Array.from({ length: ev.participant_count }, (_, i) => i + 1);
+                            const results = nums.map((num) => {
+                                const ps = ev.scores.filter((s) => s.participant_number === num);
+                                const total = ps.reduce((sum, s) => sum + s.score, 0);
+                                return { num, ps, total };
+                            }).sort((a, b) => b.total - a.total);
+
+                            let currentRank = 1;
+                            let prevTotal = -1;
+                            const rankedResults = results.map((row, idx) => {
+                                if (row.ps.length > 0) {
+                                    if (prevTotal !== -1 && row.total < prevTotal) {
+                                        currentRank = idx + 1;
+                                    }
+                                    prevTotal = row.total;
+                                }
+                                return { ...row, rank: row.ps.length > 0 ? currentRank : 0 };
+                            });
+
+                            const activeResults = rankedResults.filter(row => row.ps.length > 0);
+
+                            return (
+                                <div key={ev.id} className="print-event-block" style={{ marginBottom: 24, paddingBottom: 8 }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#F8FAFC', padding: '6px 10px', borderLeft: '4px solid #4F46E5', marginBottom: 8 }}>
+                                        <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 800, color: '#1E293B' }}>
+                                            {mode === 'all' ? `${eventIdx + 1}. ` : ''}{ev.event_name}
+                                        </h3>
+                                        <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#475569', background: '#E2E8F0', padding: '2px 8px', borderRadius: '4px' }}>
+                                            {ev.category || 'General'} · {ev.event_type === 'group' ? 'Group Event' : 'Solo Event'}
+                                        </span>
+                                    </div>
+
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                                        <thead>
+                                            <tr style={{ background: '#F1F5F9', borderBottom: '2px solid #CBD5E1', textAlign: 'left' }}>
+                                                <th style={{ padding: '8px 10px', width: '90px' }}>Rank</th>
+                                                <th style={{ padding: '8px 10px', width: '130px' }}>Code Number</th>
+                                                <th style={{ padding: '8px 10px' }}>Winner Name(s)</th>
+                                                <th style={{ padding: '8px 10px' }}>Team Name</th>
+                                                <th style={{ padding: '8px 10px', textAlign: 'center', width: '60px' }}>Grade</th>
+                                                <th style={{ padding: '8px 10px', textAlign: 'right', width: '100px' }}>Total Points</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {activeResults.map((row, idx) => {
+                                                const medal = idx === 0 ? '🥇 1st Place' : idx === 1 ? '🥈 2nd Place' : idx === 2 ? '🥉 3rd Place' : `${row.rank}th Place`;
+                                                const isGroup = ev.event_type === 'group';
+
+                                                let rankPoints = 0;
+                                                if (row.rank === 1) rankPoints = isGroup ? 10 : 5;
+                                                else if (row.rank === 2) rankPoints = isGroup ? 5 : 3;
+                                                else if (row.rank === 3) rankPoints = isGroup ? 3 : 1;
+
+                                                let matchingMappings = mappings.filter(m => m.event_id === ev.id && m.participant_number === row.num);
+                                                if (matchingMappings.length === 0) {
+                                                    const allEventMappings = mappings
+                                                        .filter(m => m.event_id === ev.id)
+                                                        .sort((a, b) => (a.participant_number ?? Infinity) - (b.participant_number ?? Infinity) || a.created_at.localeCompare(b.created_at));
+                                                    const getKey = (m: typeof allEventMappings[0]) => m.participant_number ?? (participants.find(p => p.id === m.participant_id)?.team_id || m.id);
+                                                    if (isGroup) {
+                                                        const groupKeys = Array.from(new Set(allEventMappings.map(getKey)));
+                                                        const targetKey = groupKeys[row.num - 1];
+                                                        if (targetKey !== undefined) {
+                                                            matchingMappings = allEventMappings.filter(m => getKey(m) === targetKey);
+                                                        }
+                                                    } else {
+                                                        const target = allEventMappings[row.num - 1];
+                                                        if (target) matchingMappings = [target];
+                                                    }
+                                                }
+
+                                                const matchingParts = participants.filter(p => matchingMappings.some(m => m.participant_id === p.id));
+                                                let matchingTeams = [...new Set(matchingParts.map(p => {
+                                                    const t = teams.find(tm => tm.id === p.team_id);
+                                                    return t ? t.name : null;
+                                                }).filter(Boolean))];
+
+                                                if (isGroup && matchingTeams.length === 0 && teams.length > 0) {
+                                                    const fallbackTeam = teams[(row.num - 1) % teams.length];
+                                                    if (fallbackTeam) matchingTeams = [fallbackTeam.name];
+                                                }
+
+                                                const avgVal = row.ps.length > 0 ? row.total / row.ps.length : null;
+                                                let gradeText = '—';
+                                                let gradePoints = 0;
+                                                if (avgVal !== null) {
+                                                    if (avgVal >= 80) { gradePoints = 5; gradeText = 'A'; }
+                                                    else if (avgVal >= 60) { gradePoints = 3; gradeText = 'B'; }
+                                                    else { gradePoints = 1; gradeText = 'C'; }
+                                                }
+                                                const totalPoints = rankPoints + gradePoints;
+
+                                                return (
+                                                    <tr key={row.num} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                                                        <td style={{ padding: '8px 10px', fontWeight: 700 }}>{medal}</td>
+                                                        <td style={{ padding: '8px 10px', fontWeight: 600, color: '#334155' }}>
+                                                            Code Number {getCodeName(row.num, room.code_type)}
+                                                        </td>
+                                                        <td style={{ padding: '8px 10px' }}>
+                                                            {matchingParts.length > 0 ? (
+                                                                isGroup ? (
+                                                                    <span style={{ fontWeight: 600 }}>
+                                                                        {matchingParts.map(p => `${p.name} (${p.chest_number})`).join(', ')}
+                                                                    </span>
+                                                                ) : (
+                                                                    <span style={{ fontWeight: 600 }}>
+                                                                        {matchingParts[0].name} ({matchingParts[0].chest_number})
+                                                                    </span>
+                                                                )
+                                                            ) : (
+                                                                <span style={{ color: '#94A3B8', fontStyle: 'italic' }}>—</span>
+                                                            )}
+                                                        </td>
+                                                        <td style={{ padding: '8px 10px', fontWeight: 600 }}>
+                                                            {matchingTeams.length > 0 ? matchingTeams.join(', ') : '—'}
+                                                        </td>
+                                                        <td style={{ padding: '8px 10px', textAlign: 'center', fontWeight: 800 }}>
+                                                            {gradeText}
+                                                        </td>
+                                                        <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 800, color: '#4F46E5' }}>
+                                                            {totalPoints} pts
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            );
+                        })
+                    )}
+
+                    {/* Master Verification Footer */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 20, marginTop: 32, paddingTop: 16, pageBreakInside: 'avoid', breakInside: 'avoid' }}>
+                        <div style={{ textAlign: 'center', borderTop: '1.5px dashed #94A3B8', paddingTop: 8, fontSize: '0.78rem', color: '#475569', fontWeight: 700 }}>
+                            Chief Judge Signature
+                        </div>
+                        <div style={{ textAlign: 'center', borderTop: '1.5px dashed #94A3B8', paddingTop: 8, fontSize: '0.78rem', color: '#475569', fontWeight: 700 }}>
+                            Event Coordinator Signature
+                        </div>
+                        <div style={{ textAlign: 'center', borderTop: '1.5px dashed #94A3B8', paddingTop: 8, fontSize: '0.78rem', color: '#475569', fontWeight: 700 }}>
+                            Official Seal & Stamp
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>,
+        container
     );
 }

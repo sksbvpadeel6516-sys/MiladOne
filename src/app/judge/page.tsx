@@ -212,9 +212,9 @@ export default function JudgePage() {
             const v = scores[num];
             const labelStyle = joinedRoom.code_type === 'letter' ? 'Letter' : 'Number';
             const name = getCodeName(num, joinedRoom.code_type);
-            if (!v && v !== '0') { showToast(`Fill in score for Participant ${name}.`, 'error'); return; }
+            if (!v && v !== '0') { showToast(`Fill in score for Code Number ${name}.`, 'error'); return; }
             const n = Number(v);
-            if (isNaN(n) || n < 0 || n > 100) { showToast(`Participant ${name}: score must be 0–100.`, 'error'); return; }
+            if (isNaN(n) || n < 0 || n > 100) { showToast(`Code Number ${name}: score must be 0–100.`, 'error'); return; }
         }
         setSubmitting(true);
         try {
@@ -523,7 +523,7 @@ export default function JudgePage() {
                                                 return (
                                                     <motion.div key={num} variants={itemV} className="participant-row">
                                                         <div className="p-num">{codeLabel}</div>
-                                                        <div className="p-label">Participant {codeLabel}</div>
+                                                        <div className="p-label">Code Number {codeLabel}</div>
                                                         <div className="p-score-wrap">
                                                             <input
                                                                 id={`score-p${num}`}
